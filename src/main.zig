@@ -504,12 +504,23 @@ pub fn main() !void {
         .pColorAttachments = &color_attachment_reference,
     };
 
+    var subpass_dependency = c.VkSubpassDependency{
+        .srcSubpass = c.VK_SUBPASS_EXTERNAL,
+        .dstSubpass = 0,
+        .srcStageMask = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask = 0,
+        .dstStageMask = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstAccessMask = c.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+    };
+
     var render_pass_create_info = c.VkRenderPassCreateInfo{
         .sType = c.VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
         .attachmentCount = 1,
         .pAttachments = &color_attachment_description,
         .subpassCount = 1,
         .pSubpasses = &subpass_description,
+        .dependencyCount = 1,
+        .pDependencies = &subpass_dependency,
     };
 
     var render_pass: c.VkRenderPass = undefined;
@@ -594,23 +605,133 @@ pub fn main() !void {
         std.debug.print("Failed to allocate command buffer. error code: {}", .{err});
     }
 
-    var command_buffer_begin_info = c.VkCommandBufferBeginInfo{
-        .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-        .flags = 0,
-        .pInheritanceInfo = null,
+    var semaphore_create_info = c.VkSemaphoreCreateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
     };
 
-    err = c.vkBeginCommandBuffer(command_buffer, &command_buffer_begin_info);
+    var fence_create_info = c.VkFenceCreateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .flags = c.VK_FENCE_CREATE_SIGNALED_BIT,
+    };
+
+    var render_finished_semaphore: c.VkSemaphore = undefined;
+    var image_available_semaphore: c.VkSemaphore = undefined;
+    var rendering_fence: c.VkFence = undefined;
+
+    err |= c.vkCreateSemaphore(device, &semaphore_create_info, null, &render_finished_semaphore);
+    err |= c.vkCreateSemaphore(device, &semaphore_create_info, null, &image_available_semaphore);
+    err |= c.vkCreateFence(device, &fence_create_info, null, &rendering_fence);
+
     if (err != c.VK_SUCCESS) {
-        std.debug.print("Failed to begin recording command buffer. error code: {}", .{err});
+        std.debug.print("Error when making semaphores.", .{});
     }
+
+    var command_buffer_image_index: u32 = 0;
 
     while (c.glfwWindowShouldClose(window) == 0) {
         c.glfwPollEvents();
         c.glfwSwapBuffers(window);
+
+        _ = c.vkWaitForFences(device, 1, &rendering_fence, c.VK_TRUE, c.UINT64_MAX);
+        _ = c.vkResetFences(device, 1, &rendering_fence);
+
+        _ = c.vkAcquireNextImageKHR(device, swapchain, c.UINT64_MAX, image_available_semaphore, null, &command_buffer_image_index);
+        _ = c.vkResetCommandBuffer(command_buffer, 0);
+
+        var command_buffer_begin_info = c.VkCommandBufferBeginInfo{
+            .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = 0,
+            .pInheritanceInfo = null,
+        };
+
+        err = c.vkBeginCommandBuffer(command_buffer, &command_buffer_begin_info);
+        if (err != c.VK_SUCCESS) {
+            std.debug.print("Failed to begin recording command buffer. error code: {}", .{err});
+        }
+
+        var clear_color = c.VkClearValue{
+            .color = c.VkClearColorValue{
+                .float32 = [4]f32{ 0, 0, 0, 1 },
+            },
+        };
+        var render_pass_begin_info = c.VkRenderPassBeginInfo{
+            .sType = c.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+            .renderPass = render_pass,
+            .framebuffer = swapchain_framebuffers[command_buffer_image_index],
+            .renderArea = c.VkRect2D{
+                .offset = .{ .x = 0, .y = 0 },
+                .extent = swapchain_extent,
+            },
+            .clearValueCount = 1,
+            .pClearValues = &clear_color,
+        };
+        c.vkCmdBeginRenderPass(command_buffer, &render_pass_begin_info, c.VK_SUBPASS_CONTENTS_INLINE);
+
+        c.vkCmdBindPipeline(command_buffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
+
+        c.vkCmdSetViewport(
+            command_buffer,
+            0,
+            1,
+            &viewport,
+        );
+        c.vkCmdSetScissor(
+            command_buffer,
+            0,
+            1,
+            &scissor,
+        );
+        c.vkCmdDraw(
+            command_buffer,
+            3,
+            1,
+            0,
+            0,
+        );
+
+        c.vkCmdEndRenderPass(command_buffer);
+        err = c.vkEndCommandBuffer(command_buffer);
+
+        if (err != c.VK_SUCCESS) {
+            std.debug.print("Error on command buffer end. Error code: {}", .{err});
+        }
+
+        var submit_info = c.VkSubmitInfo{
+            .sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &image_available_semaphore,
+            .pWaitDstStageMask = &[_]c.VkPipelineStageFlags{c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT},
+            .commandBufferCount = 1,
+            .pCommandBuffers = &command_buffer,
+            .signalSemaphoreCount = 1,
+            .pSignalSemaphores = &render_finished_semaphore,
+        };
+
+        err = c.vkQueueSubmit(graphics_queue, 1, &submit_info, rendering_fence);
+
+        if (err != c.VK_SUCCESS) {
+            std.debug.print("failed to submit queue. error code: {} ", .{err});
+        }
+
+        var present_info = c.VkPresentInfoKHR{
+            .sType = c.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &render_finished_semaphore,
+            .swapchainCount = 1,
+            .pSwapchains = &swapchain,
+            .pImageIndices = &command_buffer_image_index,
+            .pResults = null,
+        };
+
+        _ = c.vkQueuePresentKHR(surface_queue, &present_info);
     }
 
     // cleanup
+
+    _ = c.vkDeviceWaitIdle(device);
+    c.vkDestroySemaphore(device, render_finished_semaphore, null);
+    c.vkDestroySemaphore(device, image_available_semaphore, null);
+    c.vkDestroyFence(device, rendering_fence, null);
 
     c.vkDestroyCommandPool(device, command_pool, null);
 
