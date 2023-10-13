@@ -628,9 +628,19 @@ pub fn main() !void {
 
     var command_buffer_image_index: u32 = 0;
 
+    var last_fps: usize = 0;
+    var last_fps_time: f64 = 0;
+    var fps_counter: usize = 0;
     while (c.glfwWindowShouldClose(window) == 0) {
         c.glfwPollEvents();
         c.glfwSwapBuffers(window);
+
+        if (c.glfwGetTime() - last_fps_time > 1) {
+            last_fps = fps_counter;
+            fps_counter = 0;
+            last_fps_time = c.glfwGetTime();
+            std.debug.print("FPS: {}", .{last_fps});
+        }
 
         _ = c.vkWaitForFences(device, 1, &rendering_fence, c.VK_TRUE, c.UINT64_MAX);
         _ = c.vkResetFences(device, 1, &rendering_fence);
@@ -724,6 +734,7 @@ pub fn main() !void {
         };
 
         _ = c.vkQueuePresentKHR(surface_queue, &present_info);
+        fps_counter += 1;
     }
 
     // cleanup
