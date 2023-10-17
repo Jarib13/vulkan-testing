@@ -591,7 +591,9 @@ pub fn main() !void {
         std.debug.print("Failed to create command pool. error code: {}", .{err});
     }
 
-    var command_buffer: c.VkCommandBuffer = undefined;
+    const max_frames_in_flight: u32 = 4;
+
+    var command_buffers: []c.VkCommandBuffer = try alloc.alloc(c.VkCommandBuffer, max_frames_in_flight);
     var command_buffer_allocate_info = c.VkCommandBufferAllocateInfo{
         .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .commandPool = command_pool,
@@ -599,10 +601,12 @@ pub fn main() !void {
         .commandBufferCount = 1,
     };
 
-    err = c.vkAllocateCommandBuffers(device, &command_buffer_allocate_info, &command_buffer);
+    for (0..max_frames_in_flight) |i| {
+        err = c.vkAllocateCommandBuffers(device, &command_buffer_allocate_info, &command_buffers[i]);
 
-    if (err != c.VK_SUCCESS) {
-        std.debug.print("Failed to allocate command buffer. error code: {}", .{err});
+        if (err != c.VK_SUCCESS) {
+            std.debug.print("Failed to allocate command buffer. error code: {}", .{err});
+        }
     }
 
     var semaphore_create_info = c.VkSemaphoreCreateInfo{
@@ -614,16 +618,18 @@ pub fn main() !void {
         .flags = c.VK_FENCE_CREATE_SIGNALED_BIT,
     };
 
-    var render_finished_semaphore: c.VkSemaphore = undefined;
-    var image_available_semaphore: c.VkSemaphore = undefined;
-    var rendering_fence: c.VkFence = undefined;
+    var render_finished_semaphores: []c.VkSemaphore = try alloc.alloc(c.VkSemaphore, max_frames_in_flight);
+    var image_available_semaphores: []c.VkSemaphore = try alloc.alloc(c.VkSemaphore, max_frames_in_flight);
+    var rendering_fences: []c.VkFence = try alloc.alloc(c.VkFence, max_frames_in_flight);
 
-    err |= c.vkCreateSemaphore(device, &semaphore_create_info, null, &render_finished_semaphore);
-    err |= c.vkCreateSemaphore(device, &semaphore_create_info, null, &image_available_semaphore);
-    err |= c.vkCreateFence(device, &fence_create_info, null, &rendering_fence);
+    for (0..max_frames_in_flight) |i| {
+        err |= c.vkCreateSemaphore(device, &semaphore_create_info, null, &render_finished_semaphores[i]);
+        err |= c.vkCreateSemaphore(device, &semaphore_create_info, null, &image_available_semaphores[i]);
+        err |= c.vkCreateFence(device, &fence_create_info, null, &rendering_fences[i]);
 
-    if (err != c.VK_SUCCESS) {
-        std.debug.print("Error when making semaphores.", .{});
+        if (err != c.VK_SUCCESS) {
+            std.debug.print("Error when making semaphores.", .{});
+        }
     }
 
     var command_buffer_image_index: u32 = 0;
@@ -631,22 +637,27 @@ pub fn main() !void {
     var last_fps: usize = 0;
     var last_fps_time: f64 = 0;
     var fps_counter: usize = 0;
+
+    var current_frame: u32 = 0;
+
     while (c.glfwWindowShouldClose(window) == 0) {
         c.glfwPollEvents();
-        c.glfwSwapBuffers(window);
+        //c.glfwSwapBuffers(window);
 
         if (c.glfwGetTime() - last_fps_time > 1) {
             last_fps = fps_counter;
             fps_counter = 0;
             last_fps_time = c.glfwGetTime();
-            std.debug.print("FPS: {}", .{last_fps});
+            std.debug.print("FPS: {}\n", .{last_fps});
         }
 
-        _ = c.vkWaitForFences(device, 1, &rendering_fence, c.VK_TRUE, c.UINT64_MAX);
-        _ = c.vkResetFences(device, 1, &rendering_fence);
+        var f = current_frame % max_frames_in_flight;
+        current_frame += 1;
+        _ = c.vkWaitForFences(device, 1, &rendering_fences[f], c.VK_TRUE, c.UINT64_MAX);
+        _ = c.vkResetFences(device, 1, &rendering_fences[f]);
 
-        _ = c.vkAcquireNextImageKHR(device, swapchain, c.UINT64_MAX, image_available_semaphore, null, &command_buffer_image_index);
-        _ = c.vkResetCommandBuffer(command_buffer, 0);
+        _ = c.vkAcquireNextImageKHR(device, swapchain, c.UINT64_MAX, image_available_semaphores[f], null, &command_buffer_image_index);
+        _ = c.vkResetCommandBuffer(command_buffers[f], 0);
 
         var command_buffer_begin_info = c.VkCommandBufferBeginInfo{
             .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -654,14 +665,14 @@ pub fn main() !void {
             .pInheritanceInfo = null,
         };
 
-        err = c.vkBeginCommandBuffer(command_buffer, &command_buffer_begin_info);
+        err = c.vkBeginCommandBuffer(command_buffers[f], &command_buffer_begin_info);
         if (err != c.VK_SUCCESS) {
             std.debug.print("Failed to begin recording command buffer. error code: {}", .{err});
         }
 
         var clear_color = c.VkClearValue{
             .color = c.VkClearColorValue{
-                .float32 = [4]f32{ 0, 0, 0, 1 },
+                .float32 = [4]f32{ 0, 0, 1, 1 },
             },
         };
         var render_pass_begin_info = c.VkRenderPassBeginInfo{
@@ -675,32 +686,32 @@ pub fn main() !void {
             .clearValueCount = 1,
             .pClearValues = &clear_color,
         };
-        c.vkCmdBeginRenderPass(command_buffer, &render_pass_begin_info, c.VK_SUBPASS_CONTENTS_INLINE);
+        c.vkCmdBeginRenderPass(command_buffers[f], &render_pass_begin_info, c.VK_SUBPASS_CONTENTS_INLINE);
 
-        c.vkCmdBindPipeline(command_buffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
+        c.vkCmdBindPipeline(command_buffers[f], c.VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
 
         c.vkCmdSetViewport(
-            command_buffer,
+            command_buffers[f],
             0,
             1,
             &viewport,
         );
         c.vkCmdSetScissor(
-            command_buffer,
+            command_buffers[f],
             0,
             1,
             &scissor,
         );
         c.vkCmdDraw(
-            command_buffer,
+            command_buffers[f],
             3,
             1,
             0,
             0,
         );
 
-        c.vkCmdEndRenderPass(command_buffer);
-        err = c.vkEndCommandBuffer(command_buffer);
+        c.vkCmdEndRenderPass(command_buffers[f]);
+        err = c.vkEndCommandBuffer(command_buffers[f]);
 
         if (err != c.VK_SUCCESS) {
             std.debug.print("Error on command buffer end. Error code: {}", .{err});
@@ -709,15 +720,15 @@ pub fn main() !void {
         var submit_info = c.VkSubmitInfo{
             .sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &image_available_semaphore,
+            .pWaitSemaphores = &image_available_semaphores[f],
             .pWaitDstStageMask = &[_]c.VkPipelineStageFlags{c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT},
             .commandBufferCount = 1,
-            .pCommandBuffers = &command_buffer,
+            .pCommandBuffers = &command_buffers[f],
             .signalSemaphoreCount = 1,
-            .pSignalSemaphores = &render_finished_semaphore,
+            .pSignalSemaphores = &render_finished_semaphores[f],
         };
 
-        err = c.vkQueueSubmit(graphics_queue, 1, &submit_info, rendering_fence);
+        err = c.vkQueueSubmit(graphics_queue, 1, &submit_info, rendering_fences[f]);
 
         if (err != c.VK_SUCCESS) {
             std.debug.print("failed to submit queue. error code: {} ", .{err});
@@ -726,7 +737,7 @@ pub fn main() !void {
         var present_info = c.VkPresentInfoKHR{
             .sType = c.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &render_finished_semaphore,
+            .pWaitSemaphores = &render_finished_semaphores[f],
             .swapchainCount = 1,
             .pSwapchains = &swapchain,
             .pImageIndices = &command_buffer_image_index,
@@ -740,9 +751,11 @@ pub fn main() !void {
     // cleanup
 
     _ = c.vkDeviceWaitIdle(device);
-    c.vkDestroySemaphore(device, render_finished_semaphore, null);
-    c.vkDestroySemaphore(device, image_available_semaphore, null);
-    c.vkDestroyFence(device, rendering_fence, null);
+    for (0..max_frames_in_flight) |i| {
+        c.vkDestroySemaphore(device, render_finished_semaphores[i], null);
+        c.vkDestroySemaphore(device, image_available_semaphores[i], null);
+        c.vkDestroyFence(device, rendering_fences[i], null);
+    }
 
     c.vkDestroyCommandPool(device, command_pool, null);
 
