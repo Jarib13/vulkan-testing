@@ -8,6 +8,7 @@ var alloc: std.mem.Allocator = undefined;
 
 var window: ?*c.GLFWwindow = undefined;
 
+var physical_device: c.VkPhysicalDevice = null;
 var device: c.VkDevice = undefined;
 
 var surface: c.VkSurfaceKHR = undefined;
@@ -25,6 +26,11 @@ var viewport: c.VkViewport = undefined;
 var scissor: c.VkRect2D = undefined;
 
 var render_pass: c.VkRenderPass = undefined;
+
+const max_frames_in_flight: u32 = 4;
+var render_finished_semaphores: []c.VkSemaphore = undefined;
+var image_available_semaphores: []c.VkSemaphore = undefined;
+var rendering_fences: []c.VkFence = undefined;
 
 fn name_eql(a: [256]u8, b: []const u8) bool {
     var i: usize = 0;
@@ -121,8 +127,6 @@ pub fn main() !void {
     err = c.glfwCreateWindowSurface(instance, window, null, &surface);
 
     //physical device
-
-    var physical_device: c.VkPhysicalDevice = null;
     var physical_device_count: u32 = 0;
 
     err = c.vkEnumeratePhysicalDevices(instance, &physical_device_count, null);
@@ -497,8 +501,6 @@ pub fn main() !void {
         std.debug.print("Failed to create command pool. error code: {}", .{err});
     }
 
-    const max_frames_in_flight: u32 = 4;
-
     var command_buffers: []c.VkCommandBuffer = try alloc.alloc(c.VkCommandBuffer, max_frames_in_flight);
     var command_buffer_allocate_info = c.VkCommandBufferAllocateInfo{
         .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
@@ -524,9 +526,9 @@ pub fn main() !void {
         .flags = c.VK_FENCE_CREATE_SIGNALED_BIT,
     };
 
-    var render_finished_semaphores: []c.VkSemaphore = try alloc.alloc(c.VkSemaphore, max_frames_in_flight);
-    var image_available_semaphores: []c.VkSemaphore = try alloc.alloc(c.VkSemaphore, max_frames_in_flight);
-    var rendering_fences: []c.VkFence = try alloc.alloc(c.VkFence, max_frames_in_flight);
+    render_finished_semaphores = try alloc.alloc(c.VkSemaphore, max_frames_in_flight);
+    image_available_semaphores = try alloc.alloc(c.VkSemaphore, max_frames_in_flight);
+    rendering_fences = try alloc.alloc(c.VkFence, max_frames_in_flight);
 
     for (0..max_frames_in_flight) |i| {
         err |= c.vkCreateSemaphore(device, &semaphore_create_info, null, &render_finished_semaphores[i]);
@@ -560,10 +562,20 @@ pub fn main() !void {
         var f = current_frame % max_frames_in_flight;
         current_frame += 1;
         _ = c.vkWaitForFences(device, 1, &rendering_fences[f], c.VK_TRUE, c.UINT64_MAX);
-        _ = c.vkResetFences(device, 1, &rendering_fences[f]);
 
-        _ = c.vkAcquireNextImageKHR(device, swapchain, c.UINT64_MAX, image_available_semaphores[f], null, &command_buffer_image_index);
+        var acquire_err = c.vkAcquireNextImageKHR(device, swapchain, c.UINT64_MAX, image_available_semaphores[f], null, &command_buffer_image_index);
         _ = c.vkResetCommandBuffer(command_buffers[f], 0);
+
+        if (acquire_err == c.VK_ERROR_OUT_OF_DATE_KHR or acquire_err == c.VK_SUBOPTIMAL_KHR) {
+            c.vkDestroySemaphore(device, image_available_semaphores[f], null);
+            _ = c.vkCreateSemaphore(device, &semaphore_create_info, null, &image_available_semaphores[f]);
+            try recreate_swapchain();
+            continue;
+        } else if (acquire_err != c.VK_SUCCESS) {
+            std.debug.print("acquire error: {}\n", .{acquire_err});
+        }
+
+        _ = c.vkResetFences(device, 1, &rendering_fences[f]);
 
         var command_buffer_begin_info = c.VkCommandBufferBeginInfo{
             .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -650,24 +662,26 @@ pub fn main() !void {
             .pResults = null,
         };
 
-        _ = c.vkQueuePresentKHR(surface_queue, &present_info);
+        var present_err = c.vkQueuePresentKHR(surface_queue, &present_info);
+        if (present_err == c.VK_ERROR_OUT_OF_DATE_KHR) {
+            try recreate_swapchain();
+            continue;
+        } else if (present_err != c.VK_SUCCESS) {
+            std.debug.print("present_error: {}", .{present_err});
+        }
+
         fps_counter += 1;
     }
 
     // cleanup
 
+    clean_sync();
+
     _ = c.vkDeviceWaitIdle(device);
-    for (0..max_frames_in_flight) |i| {
-        c.vkDestroySemaphore(device, render_finished_semaphores[i], null);
-        c.vkDestroySemaphore(device, image_available_semaphores[i], null);
-        c.vkDestroyFence(device, rendering_fences[i], null);
-    }
+
+    clean_framebuffers();
 
     c.vkDestroyCommandPool(device, command_pool, null);
-
-    for (swapchain_framebuffers) |framebuffer| {
-        c.vkDestroyFramebuffer(device, framebuffer, null);
-    }
 
     c.vkDestroyRenderPass(device, render_pass, null);
     c.vkDestroyPipeline(device, graphics_pipeline, null);
@@ -676,16 +690,36 @@ pub fn main() !void {
     c.vkDestroyShaderModule(device, vertex_shader_module, null);
     c.vkDestroyShaderModule(device, fragment_shader_module, null);
 
-    for (swapchain_image_views) |swapchain_image_view| {
-        c.vkDestroyImageView(device, swapchain_image_view, null);
-    }
+    clean_swapchain();
 
-    c.vkDestroySwapchainKHR(device, swapchain, null);
     c.vkDestroyDevice(device, null);
     c.vkDestroySurfaceKHR(instance, surface, null);
     c.vkDestroyInstance(instance, null);
     c.glfwDestroyWindow(window);
     c.glfwTerminate();
+}
+
+fn clean_framebuffers() void {
+    for (swapchain_framebuffers) |framebuffer| {
+        c.vkDestroyFramebuffer(device, framebuffer, null);
+    }
+    alloc.free(swapchain_framebuffers);
+}
+
+fn clean_swapchain() void {
+    for (swapchain_image_views) |swapchain_image_view| {
+        c.vkDestroyImageView(device, swapchain_image_view, null);
+    }
+    alloc.free(swapchain_image_views);
+    c.vkDestroySwapchainKHR(device, swapchain, null);
+}
+
+fn clean_sync() void {
+    for (0..max_frames_in_flight) |i| {
+        c.vkDestroySemaphore(device, render_finished_semaphores[i], null);
+        c.vkDestroySemaphore(device, image_available_semaphores[i], null);
+        c.vkDestroyFence(device, rendering_fences[i], null);
+    }
 }
 
 fn create_swapchain() !void {
@@ -696,9 +730,12 @@ fn create_swapchain() !void {
 
     var width: u32 = @intCast(glfw_width);
     var height: u32 = @intCast(glfw_height);
+    std.debug.print("w: {} h: {}\n", .{ width, height });
 
-    //width = @min(@max(width, surface_capabilities.minImageExtent.width), surface_capabilities.maxImageExtent.width);
-    //height = @min(@max(width, surface_capabilities.minImageExtent.height), surface_capabilities.maxImageExtent.height);
+    _ = c.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface, &surface_capabilities);
+
+    width = @min(@max(width, surface_capabilities.minImageExtent.width), surface_capabilities.maxImageExtent.width);
+    height = @min(@max(width, surface_capabilities.minImageExtent.height), surface_capabilities.maxImageExtent.height);
 
     var swapchain_image_count: u32 = surface_capabilities.minImageCount + 2;
     if (surface_capabilities.maxImageCount > 0 and swapchain_image_count > surface_capabilities.maxImageCount) {
@@ -814,11 +851,16 @@ fn create_framebuffers() !void {
     }
 }
 
-fn on_window_resize(_: ?*c.GLFWwindow, width: c_int, height: c_int) callconv(.C) void {
-    _ = height;
-    _ = width;
-    create_swapchain() catch unreachable;
-    create_framebuffers() catch unreachable;
+fn recreate_swapchain() !void {
+    _ = c.vkDeviceWaitIdle(device);
+    clean_framebuffers();
+    clean_swapchain();
+    try create_swapchain();
+    try create_framebuffers();
+}
+
+fn on_window_resize(_: ?*c.GLFWwindow, _: c_int, _: c_int) callconv(.C) void {
+    //recreate_swapchain() catch unreachable;
     std.debug.print("resized", .{});
 }
 
