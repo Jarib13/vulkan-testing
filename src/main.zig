@@ -4,6 +4,28 @@ const c = @cImport({
     @cInclude("GLFW/glfw3.h");
 });
 
+var alloc: std.mem.Allocator = undefined;
+
+var window: ?*c.GLFWwindow = undefined;
+
+var device: c.VkDevice = undefined;
+
+var surface: c.VkSurfaceKHR = undefined;
+var surface_capabilities: c.VkSurfaceCapabilitiesKHR = undefined;
+var surface_format: c.VkSurfaceFormatKHR = undefined;
+var surface_present_mode: u32 = undefined;
+
+var swapchain: c.VkSwapchainKHR = undefined;
+var swapchain_images: []c.VkImage = undefined;
+var swapchain_framebuffers: []c.VkFramebuffer = undefined;
+var swapchain_extent: c.VkExtent2D = undefined;
+var swapchain_image_views: []c.VkImageView = undefined;
+
+var viewport: c.VkViewport = undefined;
+var scissor: c.VkRect2D = undefined;
+
+var render_pass: c.VkRenderPass = undefined;
+
 fn name_eql(a: [256]u8, b: []const u8) bool {
     var i: usize = 0;
     while (true) : (i += 1) {
@@ -20,11 +42,12 @@ fn name_eql(a: [256]u8, b: []const u8) bool {
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    var alloc = gpa.allocator();
+    alloc = gpa.allocator();
 
     var err = c.glfwInit();
     c.glfwWindowHint(c.GLFW_CLIENT_API, c.GLFW_NO_API);
-    var window = c.glfwCreateWindow(800, 600, "cool", null, null);
+    window = c.glfwCreateWindow(800, 600, "cool", null, null);
+    _ = c.glfwSetFramebufferSizeCallback(window, on_window_resize);
 
     // var extension_count: u32 = 0;
     // _ = c.vkEnumerateInstanceExtensionProperties(null, &extension_count, null);
@@ -95,7 +118,6 @@ pub fn main() !void {
 
     //surface
 
-    var surface: c.VkSurfaceKHR = undefined;
     err = c.glfwCreateWindowSurface(instance, window, null, &surface);
 
     //physical device
@@ -198,7 +220,6 @@ pub fn main() !void {
 
     //verify swap chain
 
-    var surface_capabilities: c.VkSurfaceCapabilitiesKHR = undefined;
     var surface_formats: [*c]c.VkSurfaceFormatKHR = undefined;
     var surface_present_modes: [*c]c.VkPresentModeKHR = undefined;
     var surface_format_count: u32 = 0;
@@ -225,7 +246,7 @@ pub fn main() !void {
         return;
     }
 
-    var surface_format: c.VkSurfaceFormatKHR = surface_formats[0];
+    surface_format = surface_formats[0];
     for (0..surface_format_count) |i| {
         var format: c.VkSurfaceFormatKHR = surface_formats[i];
         if (format.format == c.VK_FORMAT_B8G8R8A8_SRGB and format.colorSpace == c.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
@@ -233,32 +254,15 @@ pub fn main() !void {
         }
     }
 
-    var surface_present_mode: u32 = c.VK_PRESENT_MODE_FIFO_KHR;
+    surface_present_mode = c.VK_PRESENT_MODE_FIFO_KHR;
     for (surface_present_modes[0..surface_present_mode_count]) |present_mode| {
         if (present_mode == c.VK_PRESENT_MODE_MAILBOX_KHR) {
             surface_present_mode = present_mode;
         }
     }
 
-    var glfw_width: i32 = 0;
-    var glfw_height: i32 = 0;
-
-    c.glfwGetFramebufferSize(window, &glfw_width, &glfw_height);
-
-    var width: u32 = @intCast(glfw_width);
-    var height: u32 = @intCast(glfw_height);
-
-    width = @min(@max(width, surface_capabilities.minImageExtent.width), surface_capabilities.maxImageExtent.width);
-    height = @min(@max(width, surface_capabilities.minImageExtent.height), surface_capabilities.maxImageExtent.height);
-
-    var swapchain_image_count: u32 = surface_capabilities.minImageCount + 2;
-    if (surface_capabilities.maxImageCount > 0 and swapchain_image_count > surface_capabilities.maxImageCount) {
-        swapchain_image_count = surface_capabilities.maxImageCount;
-    }
-
     //logical device
 
-    var device: c.VkDevice = undefined;
     var device_queue_create_info = std.mem.zeroes(c.VkDeviceQueueCreateInfo);
     device_queue_create_info.sType = c.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
     device_queue_create_info.queueFamilyIndex = graphics_queue_family.?;
@@ -290,82 +294,15 @@ pub fn main() !void {
     c.vkGetDeviceQueue(device, surface_queue_family.?, 0, &surface_queue);
 
     // create swap chain
-    var swapchain_create_info = std.mem.zeroes(c.VkSwapchainCreateInfoKHR);
-    swapchain_create_info.sType = c.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-    swapchain_create_info.surface = surface;
-
-    swapchain_create_info.imageColorSpace = surface_format.colorSpace;
-    swapchain_create_info.imageFormat = surface_format.format;
-    swapchain_create_info.presentMode = surface_present_mode;
-    swapchain_create_info.clipped = c.VK_TRUE;
-
-    var swapchain_extent = c.VkExtent2D{ .width = width, .height = height };
-    swapchain_create_info.imageExtent = swapchain_extent;
-    swapchain_create_info.imageUsage = c.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    swapchain_create_info.minImageCount = swapchain_image_count;
-    swapchain_create_info.imageArrayLayers = 1;
-
-    swapchain_create_info.queueFamilyIndexCount = 0;
-    swapchain_create_info.pQueueFamilyIndices = null;
-    swapchain_create_info.imageSharingMode = c.VK_SHARING_MODE_EXCLUSIVE; // fix
-
-    swapchain_create_info.preTransform = surface_capabilities.currentTransform;
-
-    swapchain_create_info.compositeAlpha = c.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-
-    swapchain_create_info.oldSwapchain = null;
-
-    var swapchain: c.VkSwapchainKHR = undefined;
-    err = c.vkCreateSwapchainKHR(device, &swapchain_create_info, null, &swapchain);
-    if (err != c.VK_SUCCESS) {
-        std.debug.print("Failed to create swapchain.\n", .{});
-        return;
-    }
-
-    var swapchain_images: []c.VkImage = undefined;
-    _ = c.vkGetSwapchainImagesKHR(device, swapchain, &swapchain_image_count, null);
-    swapchain_images = try alloc.alloc(c.VkImage, swapchain_image_count);
-    _ = c.vkGetSwapchainImagesKHR(device, swapchain, &swapchain_image_count, @ptrCast(swapchain_images));
-
-    var swapchain_image_views: []c.VkImageView = try alloc.alloc(c.VkImageView, swapchain_images.len);
-    for (swapchain_image_views, swapchain_images) |*swapchain_image_view, swapchain_image| {
-        var image_view_create_info = std.mem.zeroes(c.VkImageViewCreateInfo);
-        image_view_create_info.sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        image_view_create_info.image = swapchain_image;
-
-        image_view_create_info.viewType = c.VK_IMAGE_VIEW_TYPE_2D;
-        image_view_create_info.format = surface_format.format;
-
-        image_view_create_info.components = c.VkComponentMapping{
-            .r = c.VK_COMPONENT_SWIZZLE_IDENTITY,
-            .g = c.VK_COMPONENT_SWIZZLE_IDENTITY,
-            .b = c.VK_COMPONENT_SWIZZLE_IDENTITY,
-            .a = c.VK_COMPONENT_SWIZZLE_IDENTITY,
-        };
-
-        image_view_create_info.subresourceRange = c.VkImageSubresourceRange{
-            .aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT,
-            .baseMipLevel = 0,
-            .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount = 1,
-        };
-
-        err = c.vkCreateImageView(device, &image_view_create_info, null, swapchain_image_view);
-
-        if (err != c.VK_SUCCESS) {
-            std.debug.print("Failed to create image view.\n", .{});
-            return;
-        }
-    }
+    try create_swapchain();
 
     //pipeline
 
     var fragment_shader_bytecode = @embedFile("bytecode/frag.spv");
     var vertex_shader_bytecode = @embedFile("bytecode/vert.spv");
 
-    var fragment_shader_module = try create_shader_module(alloc, device, fragment_shader_bytecode);
-    var vertex_shader_module = try create_shader_module(alloc, device, vertex_shader_bytecode);
+    var fragment_shader_module = try create_shader_module(fragment_shader_bytecode);
+    var vertex_shader_module = try create_shader_module(vertex_shader_bytecode);
 
     var vertex_shader_stage_info = std.mem.zeroes(c.VkPipelineShaderStageCreateInfo);
     vertex_shader_stage_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -404,18 +341,6 @@ pub fn main() !void {
     input_assembly_state_create_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
     input_assembly_state_create_info.topology = c.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     input_assembly_state_create_info.primitiveRestartEnable = c.VK_FALSE;
-
-    var viewport = std.mem.zeroes(c.VkViewport);
-    viewport.x = 0;
-    viewport.y = 0;
-    viewport.width = @floatFromInt(swapchain_extent.width);
-    viewport.height = @floatFromInt(swapchain_extent.height);
-    viewport.minDepth = 0;
-    viewport.maxDepth = 1;
-
-    var scissor = std.mem.zeroes(c.VkRect2D);
-    scissor.offset = .{ .x = 0, .y = 0 };
-    scissor.extent = swapchain_extent;
 
     var viewport_state_create_info = std.mem.zeroes(c.VkPipelineViewportStateCreateInfo);
     viewport_state_create_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
@@ -523,8 +448,9 @@ pub fn main() !void {
         .pDependencies = &subpass_dependency,
     };
 
-    var render_pass: c.VkRenderPass = undefined;
     err = c.vkCreateRenderPass(device, &render_pass_create_info, null, &render_pass);
+
+    try create_framebuffers();
 
     if (err != c.VK_SUCCESS) {
         std.debug.print("Failed to create render pass. error code: {}", .{err});
@@ -556,26 +482,6 @@ pub fn main() !void {
 
     if (err != c.VK_SUCCESS) {
         std.debug.print("Failed to create graphics pipeline. error code: {}", .{err});
-    }
-
-    var swapchain_framebuffers = try alloc.alloc(c.VkFramebuffer, swapchain_image_views.len);
-
-    for (swapchain_framebuffers, swapchain_image_views) |*framebuffer, swapchain_image_view| {
-        var framebuffer_create_info = c.VkFramebufferCreateInfo{
-            .sType = c.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-            .renderPass = render_pass,
-            .attachmentCount = 1,
-            .pAttachments = &swapchain_image_view,
-            .width = swapchain_extent.width,
-            .height = swapchain_extent.height,
-            .layers = 1,
-        };
-
-        err = c.vkCreateFramebuffer(device, &framebuffer_create_info, null, framebuffer);
-
-        if (err != c.VK_SUCCESS) {
-            std.debug.print("Failed to create framebuffer. error code: {}", .{err});
-        }
     }
 
     var command_pool: c.VkCommandPool = undefined;
@@ -782,7 +688,141 @@ pub fn main() !void {
     c.glfwTerminate();
 }
 
-fn u32_array_duct_tape(bytecode: []const u8, alloc: std.mem.Allocator) ![]u32 {
+fn create_swapchain() !void {
+    var glfw_width: i32 = 0;
+    var glfw_height: i32 = 0;
+
+    c.glfwGetFramebufferSize(window, &glfw_width, &glfw_height);
+
+    var width: u32 = @intCast(glfw_width);
+    var height: u32 = @intCast(glfw_height);
+
+    //width = @min(@max(width, surface_capabilities.minImageExtent.width), surface_capabilities.maxImageExtent.width);
+    //height = @min(@max(width, surface_capabilities.minImageExtent.height), surface_capabilities.maxImageExtent.height);
+
+    var swapchain_image_count: u32 = surface_capabilities.minImageCount + 2;
+    if (surface_capabilities.maxImageCount > 0 and swapchain_image_count > surface_capabilities.maxImageCount) {
+        swapchain_image_count = surface_capabilities.maxImageCount;
+    }
+
+    swapchain_extent = c.VkExtent2D{ .width = width, .height = height };
+
+    viewport = c.VkViewport{
+        .x = 0,
+        .y = 0,
+        .width = @floatFromInt(swapchain_extent.width),
+        .height = @floatFromInt(swapchain_extent.height),
+        .minDepth = 0,
+        .maxDepth = 1,
+    };
+
+    scissor = c.VkRect2D{
+        .offset = .{ .x = 0, .y = 0 },
+        .extent = swapchain_extent,
+    };
+
+    // create swap chain
+    var swapchain_create_info = std.mem.zeroes(c.VkSwapchainCreateInfoKHR);
+    swapchain_create_info.sType = c.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+    swapchain_create_info.surface = surface;
+
+    swapchain_create_info.imageColorSpace = surface_format.colorSpace;
+    swapchain_create_info.imageFormat = surface_format.format;
+    swapchain_create_info.presentMode = surface_present_mode;
+    swapchain_create_info.clipped = c.VK_TRUE;
+
+    swapchain_create_info.imageExtent = swapchain_extent;
+    swapchain_create_info.imageUsage = c.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    swapchain_create_info.minImageCount = swapchain_image_count;
+    swapchain_create_info.imageArrayLayers = 1;
+
+    swapchain_create_info.queueFamilyIndexCount = 0;
+    swapchain_create_info.pQueueFamilyIndices = null;
+    swapchain_create_info.imageSharingMode = c.VK_SHARING_MODE_EXCLUSIVE; // fix
+
+    swapchain_create_info.preTransform = surface_capabilities.currentTransform;
+
+    swapchain_create_info.compositeAlpha = c.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+
+    swapchain_create_info.oldSwapchain = null;
+
+    var err = c.vkCreateSwapchainKHR(device, &swapchain_create_info, null, &swapchain);
+    if (err != c.VK_SUCCESS) {
+        std.debug.print("Failed to create swapchain.\n", .{});
+        return;
+    }
+
+    _ = c.vkGetSwapchainImagesKHR(device, swapchain, &swapchain_image_count, null);
+    swapchain_images = try alloc.alloc(c.VkImage, swapchain_image_count);
+    _ = c.vkGetSwapchainImagesKHR(device, swapchain, &swapchain_image_count, @ptrCast(swapchain_images));
+
+    //image views
+
+    swapchain_image_views = try alloc.alloc(c.VkImageView, swapchain_images.len);
+    for (swapchain_image_views, swapchain_images) |*swapchain_image_view, swapchain_image| {
+        var image_view_create_info = std.mem.zeroes(c.VkImageViewCreateInfo);
+        image_view_create_info.sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        image_view_create_info.image = swapchain_image;
+
+        image_view_create_info.viewType = c.VK_IMAGE_VIEW_TYPE_2D;
+        image_view_create_info.format = surface_format.format;
+
+        image_view_create_info.components = c.VkComponentMapping{
+            .r = c.VK_COMPONENT_SWIZZLE_IDENTITY,
+            .g = c.VK_COMPONENT_SWIZZLE_IDENTITY,
+            .b = c.VK_COMPONENT_SWIZZLE_IDENTITY,
+            .a = c.VK_COMPONENT_SWIZZLE_IDENTITY,
+        };
+
+        image_view_create_info.subresourceRange = c.VkImageSubresourceRange{
+            .aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        };
+
+        err = c.vkCreateImageView(device, &image_view_create_info, null, swapchain_image_view);
+
+        if (err != c.VK_SUCCESS) {
+            std.debug.print("Failed to create image view.\n", .{});
+            return;
+        }
+    }
+}
+
+//depends on swapchain, swapchain image views, and render pass
+fn create_framebuffers() !void {
+    swapchain_framebuffers = try alloc.alloc(c.VkFramebuffer, swapchain_image_views.len);
+
+    for (swapchain_framebuffers, swapchain_image_views) |*framebuffer, swapchain_image_view| {
+        var framebuffer_create_info = c.VkFramebufferCreateInfo{
+            .sType = c.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .renderPass = render_pass,
+            .attachmentCount = 1,
+            .pAttachments = &swapchain_image_view,
+            .width = swapchain_extent.width,
+            .height = swapchain_extent.height,
+            .layers = 1,
+        };
+
+        var err = c.vkCreateFramebuffer(device, &framebuffer_create_info, null, framebuffer);
+
+        if (err != c.VK_SUCCESS) {
+            std.debug.print("Failed to create framebuffer. error code: {}", .{err});
+        }
+    }
+}
+
+fn on_window_resize(_: ?*c.GLFWwindow, width: c_int, height: c_int) callconv(.C) void {
+    _ = height;
+    _ = width;
+    create_swapchain() catch unreachable;
+    create_framebuffers() catch unreachable;
+    std.debug.print("resized", .{});
+}
+
+fn u32_array_duct_tape(bytecode: []const u8) ![]u32 {
     var bytecode_out = try alloc.alloc(u32, bytecode.len / 4);
     for (0..bytecode_out.len) |u| {
         var b = u * 4;
@@ -799,11 +839,11 @@ fn u32_array_duct_tape(bytecode: []const u8, alloc: std.mem.Allocator) ![]u32 {
     return bytecode_out;
 }
 
-fn create_shader_module(alloc: std.mem.Allocator, device: c.VkDevice, bytecode: []const u8) !c.VkShaderModule {
+fn create_shader_module(bytecode: []const u8) !c.VkShaderModule {
     var create_info = std.mem.zeroes(c.VkShaderModuleCreateInfo);
     create_info.sType = c.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     create_info.codeSize = bytecode.len;
-    var bytecode2 = try u32_array_duct_tape(bytecode, alloc);
+    var bytecode2 = try u32_array_duct_tape(bytecode);
     create_info.pCode = @ptrCast(bytecode2);
 
     var shader_module: c.VkShaderModule = undefined;
