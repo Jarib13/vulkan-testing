@@ -1,4 +1,19 @@
 const std = @import("std");
+
+const vectors = @import("vectors.zig");
+
+const vec2 = vectors.vec2;
+const ivec2 = vectors.ivec2;
+const iivec2 = vectors.iivec2;
+
+const vec3 = vectors.vec3;
+const ivec3 = vectors.ivec3;
+const iivec3 = vectors.iivec3;
+
+const vec4 = vectors.vec4;
+const ivec4 = vectors.ivec4;
+const iivec4 = vectors.iivec4;
+
 const c = @cImport({
     @cDefine("GLFW_INCLUDE_VULKAN", {});
     @cInclude("GLFW/glfw3.h");
@@ -334,12 +349,24 @@ pub fn main() !void {
 
     //vertex input
 
+    var vertex_binding_description = c.VkVertexInputBindingDescription{
+        .binding = 0,
+        .stride = @sizeOf(vec2),
+        .inputRate = c.VK_VERTEX_INPUT_RATE_VERTEX,
+    };
+    var vertex_position_attribute_description = c.VkVertexInputAttributeDescription{
+        .binding = 0,
+        .format = c.VK_FORMAT_R32G32_SFLOAT,
+        .location = 0,
+        .offset = 0,
+    };
+
     var vertex_input_state_create_info = std.mem.zeroes(c.VkPipelineVertexInputStateCreateInfo);
     vertex_input_state_create_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertex_input_state_create_info.vertexBindingDescriptionCount = 0;
-    vertex_input_state_create_info.pVertexBindingDescriptions = null;
-    vertex_input_state_create_info.vertexAttributeDescriptionCount = 0;
-    vertex_input_state_create_info.pVertexAttributeDescriptions = null;
+    vertex_input_state_create_info.vertexBindingDescriptionCount = 1;
+    vertex_input_state_create_info.pVertexBindingDescriptions = &vertex_binding_description;
+    vertex_input_state_create_info.vertexAttributeDescriptionCount = 1;
+    vertex_input_state_create_info.pVertexAttributeDescriptions = &vertex_position_attribute_description;
 
     var input_assembly_state_create_info = std.mem.zeroes(c.VkPipelineInputAssemblyStateCreateInfo);
     input_assembly_state_create_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -540,6 +567,78 @@ pub fn main() !void {
         }
     }
 
+    var vertex_data = [_]vec2{
+        .{ .x = 0, .y = -0.5 },
+        .{ .x = 0.5, .y = 0.5 },
+        .{ .x = -0.5, .y = 0.5 },
+        .{ .x = 0, .y = 0.5 },
+        .{ .x = -0.5, .y = -0.5 },
+        .{ .x = 0.5, .y = -0.5 },
+    };
+    var vertex_buffer: c.VkBuffer = undefined;
+    var vertex_buffer_info = c.VkBufferCreateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .pQueueFamilyIndices = @ptrCast(&graphics_queue_family),
+        .queueFamilyIndexCount = 1,
+        .sharingMode = c.VK_SHARING_MODE_EXCLUSIVE,
+        .size = @sizeOf(vec2) * vertex_data.len,
+        .usage = c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+    };
+    _ = c.vkCreateBuffer(device, &vertex_buffer_info, null, &vertex_buffer);
+    var memory_requirements: c.VkMemoryRequirements = undefined;
+    c.vkGetBufferMemoryRequirements(device, vertex_buffer, &memory_requirements);
+
+    var memory_properties: c.VkPhysicalDeviceMemoryProperties = undefined;
+    c.vkGetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
+
+    var preferred_memory_type_index: ?u32 = null;
+    var property_flags: u32 = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    std.debug.print("memoryTypeBits={b}\n", .{memory_requirements.memoryTypeBits});
+    for (0..memory_properties.memoryTypeCount) |i| {
+        var bit = (@as(u32, 1) << @as(u5, @intCast(i)));
+        std.debug.print("{}={b}, ", .{ i, bit });
+        if (memory_requirements.memoryTypeBits & bit > 0) {
+            if (memory_properties.memoryTypes[i].propertyFlags & property_flags == property_flags) {
+                preferred_memory_type_index = @intCast(i);
+            }
+        }
+    }
+
+    if (preferred_memory_type_index == null) {
+        std.debug.panic("Couldn't find memory index with the desired properties", .{});
+    }
+
+    var alloc_info = c.VkMemoryAllocateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = memory_requirements.size,
+        .memoryTypeIndex = preferred_memory_type_index.?,
+    };
+
+    var vertex_buffer_memory: c.VkDeviceMemory = undefined;
+    err = c.vkAllocateMemory(device, &alloc_info, null, &vertex_buffer_memory);
+    if (err != c.VK_SUCCESS) {
+        std.debug.panic("vulkan allocate memory error: {}", .{err});
+    }
+
+    var data: [*c]vec2 = undefined;
+
+    err = c.vkBindBufferMemory(device, vertex_buffer, vertex_buffer_memory, 0);
+
+    if (err != c.VK_SUCCESS) {
+        std.debug.panic("bind buffer memory error: {}", .{err});
+    }
+
+    err = c.vkMapMemory(device, vertex_buffer_memory, 0, vertex_buffer_info.size, 0, @alignCast(@ptrCast(&data)));
+    std.debug.print("memory: size={} alignment={}", .{ memory_requirements.size, memory_requirements.alignment });
+
+    if (err != c.VK_SUCCESS) {
+        std.debug.panic("vulkan map memory error: {}", .{err});
+    }
+
+    @memcpy(data[0..vertex_data.len], vertex_data[0..vertex_data.len]);
+
+    c.vkUnmapMemory(device, vertex_buffer_memory);
+
     var command_buffer_image_index: u32 = 0;
 
     var last_fps: usize = 0;
@@ -620,9 +719,13 @@ pub fn main() !void {
             1,
             &scissor,
         );
+
+        var buffer_offsets: u64 = 0;
+        c.vkCmdBindVertexBuffers(command_buffers[f], 0, 1, &vertex_buffer, @ptrCast(&buffer_offsets));
+
         c.vkCmdDraw(
             command_buffers[f],
-            3,
+            vertex_data.len,
             1,
             0,
             0,
