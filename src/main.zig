@@ -349,7 +349,7 @@ pub fn main() !void {
 
     //vertex input
 
-    var vertex_binding_description = c.VkVertexInputBindingDescription{
+    var vertex_position_binding_description = c.VkVertexInputBindingDescription{
         .binding = 0,
         .stride = @sizeOf(vec2),
         .inputRate = c.VK_VERTEX_INPUT_RATE_VERTEX,
@@ -360,13 +360,34 @@ pub fn main() !void {
         .location = 0,
         .offset = 0,
     };
+    var vertex_color_binding_description = c.VkVertexInputBindingDescription{
+        .binding = 1,
+        .stride = @sizeOf(vec3),
+        .inputRate = c.VK_VERTEX_INPUT_RATE_VERTEX,
+    };
+    var vertex_color_attribute_description = c.VkVertexInputAttributeDescription{
+        .binding = 1,
+        .format = c.VK_FORMAT_R32G32B32_SFLOAT,
+        .location = 1,
+        .offset = 0,
+    };
+
+    var vertex_binding_descriptions = [_]c.VkVertexInputBindingDescription{
+        vertex_position_binding_description,
+        vertex_color_binding_description,
+    };
+
+    var vertex_attribute_descriptions = [_]c.VkVertexInputAttributeDescription{
+        vertex_position_attribute_description,
+        vertex_color_attribute_description,
+    };
 
     var vertex_input_state_create_info = std.mem.zeroes(c.VkPipelineVertexInputStateCreateInfo);
     vertex_input_state_create_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertex_input_state_create_info.vertexBindingDescriptionCount = 1;
-    vertex_input_state_create_info.pVertexBindingDescriptions = &vertex_binding_description;
-    vertex_input_state_create_info.vertexAttributeDescriptionCount = 1;
-    vertex_input_state_create_info.pVertexAttributeDescriptions = &vertex_position_attribute_description;
+    vertex_input_state_create_info.vertexBindingDescriptionCount = vertex_binding_descriptions.len;
+    vertex_input_state_create_info.pVertexBindingDescriptions = &vertex_binding_descriptions;
+    vertex_input_state_create_info.vertexAttributeDescriptionCount = vertex_attribute_descriptions.len;
+    vertex_input_state_create_info.pVertexAttributeDescriptions = &vertex_attribute_descriptions;
 
     var input_assembly_state_create_info = std.mem.zeroes(c.VkPipelineInputAssemblyStateCreateInfo);
     input_assembly_state_create_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -575,52 +596,25 @@ pub fn main() !void {
         .{ .x = -0.5, .y = -0.5 },
         .{ .x = 0.5, .y = -0.5 },
     };
-    var vertex_buffer: c.VkBuffer = undefined;
-    var vertex_buffer_info = c.VkBufferCreateInfo{
-        .sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .pQueueFamilyIndices = @ptrCast(&graphics_queue_family),
-        .queueFamilyIndexCount = 1,
-        .sharingMode = c.VK_SHARING_MODE_EXCLUSIVE,
-        .size = @sizeOf(vec2) * vertex_data.len,
-        .usage = c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-    };
-    _ = c.vkCreateBuffer(device, &vertex_buffer_info, null, &vertex_buffer);
-    var memory_requirements: c.VkMemoryRequirements = undefined;
-    c.vkGetBufferMemoryRequirements(device, vertex_buffer, &memory_requirements);
-
-    var memory_properties: c.VkPhysicalDeviceMemoryProperties = undefined;
-    c.vkGetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
-
-    var preferred_memory_type_index: ?u32 = null;
-    var property_flags: u32 = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    std.debug.print("memoryTypeBits={b}\n", .{memory_requirements.memoryTypeBits});
-    for (0..memory_properties.memoryTypeCount) |i| {
-        var bit = (@as(u32, 1) << @as(u5, @intCast(i)));
-        std.debug.print("{}={b}, ", .{ i, bit });
-        if (memory_requirements.memoryTypeBits & bit > 0) {
-            if (memory_properties.memoryTypes[i].propertyFlags & property_flags == property_flags) {
-                preferred_memory_type_index = @intCast(i);
-            }
-        }
-    }
-
-    if (preferred_memory_type_index == null) {
-        std.debug.panic("Couldn't find memory index with the desired properties", .{});
-    }
-
-    var alloc_info = c.VkMemoryAllocateInfo{
-        .sType = c.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .allocationSize = memory_requirements.size,
-        .memoryTypeIndex = preferred_memory_type_index.?,
+    var vertex_colors = [_]vec3{
+        .{ .x = 1, .y = 0, .z = 1 },
+        .{ .x = 1, .y = 0.1, .z = 0.8 },
+        .{ .x = 0.8, .y = 0.1, .z = 1 },
+        .{ .x = 0, .y = 1, .z = 1 },
+        .{ .x = 0.1, .y = 0.8, .z = 1 },
+        .{ .x = 0.1, .y = 1, .z = 0.8 },
     };
 
-    var vertex_buffer_memory: c.VkDeviceMemory = undefined;
-    err = c.vkAllocateMemory(device, &alloc_info, null, &vertex_buffer_memory);
-    if (err != c.VK_SUCCESS) {
-        std.debug.panic("vulkan allocate memory error: {}", .{err});
-    }
+    var positions = try create_vertex_buffer(@sizeOf(vec2) * vertex_data.len, graphics_queue_family.?);
+    var vertex_buffer = positions.buffer;
+    var vertex_buffer_memory = positions.memory;
+
+    var colors = try create_vertex_buffer(@sizeOf(vec3) * vertex_colors.len, graphics_queue_family.?);
+    var vertex_color_buffer = colors.buffer;
+    var vertex_color_buffer_memory = colors.memory;
 
     var data: [*c]vec2 = undefined;
+    var data_vec3: [*c]vec3 = undefined;
 
     err = c.vkBindBufferMemory(device, vertex_buffer, vertex_buffer_memory, 0);
 
@@ -628,17 +622,29 @@ pub fn main() !void {
         std.debug.panic("bind buffer memory error: {}", .{err});
     }
 
-    err = c.vkMapMemory(device, vertex_buffer_memory, 0, vertex_buffer_info.size, 0, @alignCast(@ptrCast(&data)));
-    std.debug.print("memory: size={} alignment={}", .{ memory_requirements.size, memory_requirements.alignment });
+    err = c.vkMapMemory(device, vertex_buffer_memory, 0, @sizeOf(vec2) * vertex_data.len, 0, @alignCast(@ptrCast(&data)));
 
     if (err != c.VK_SUCCESS) {
         std.debug.panic("vulkan map memory error: {}", .{err});
     }
 
     @memcpy(data[0..vertex_data.len], vertex_data[0..vertex_data.len]);
-
     c.vkUnmapMemory(device, vertex_buffer_memory);
 
+    //colors
+
+    err = c.vkBindBufferMemory(device, vertex_color_buffer, vertex_color_buffer_memory, 0);
+
+    if (err != c.VK_SUCCESS) {
+        std.debug.panic("bind buffer memory error: {}", .{err});
+    }
+
+    err = c.vkMapMemory(device, vertex_color_buffer_memory, 0, @sizeOf(vec3) * vertex_colors.len, 0, @alignCast(@ptrCast(&data_vec3)));
+    if (err != c.VK_SUCCESS) {
+        std.debug.panic("vulkan map memory error: {}", .{err});
+    }
+    @memcpy(data_vec3[0..vertex_colors.len], vertex_colors[0..vertex_colors.len]);
+    c.vkUnmapMemory(device, vertex_color_buffer_memory);
     var command_buffer_image_index: u32 = 0;
 
     var last_fps: usize = 0;
@@ -720,8 +726,22 @@ pub fn main() !void {
             &scissor,
         );
 
-        var buffer_offsets: u64 = 0;
-        c.vkCmdBindVertexBuffers(command_buffers[f], 0, 1, &vertex_buffer, @ptrCast(&buffer_offsets));
+        var buffers = [_]c.VkBuffer{
+            vertex_buffer,
+            vertex_color_buffer,
+        };
+
+        var buffer_offsets = [_]u64{
+            0,
+            0,
+        };
+        c.vkCmdBindVertexBuffers(
+            command_buffers[f],
+            0,
+            2,
+            &buffers,
+            @ptrCast(&buffer_offsets),
+        );
 
         c.vkCmdDraw(
             command_buffers[f],
@@ -800,6 +820,60 @@ pub fn main() !void {
     c.vkDestroyInstance(instance, null);
     c.glfwDestroyWindow(window);
     c.glfwTerminate();
+}
+
+fn create_vertex_buffer(size: u64, graphics_queue_family: u32) !struct { buffer: c.VkBuffer, memory: c.VkDeviceMemory } {
+    var vertex_buffer: c.VkBuffer = undefined;
+
+    var create_info = c.VkBufferCreateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .pQueueFamilyIndices = @ptrCast(&graphics_queue_family),
+        .queueFamilyIndexCount = 1,
+        .sharingMode = c.VK_SHARING_MODE_EXCLUSIVE,
+        .size = size,
+        .usage = c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+    };
+
+    _ = c.vkCreateBuffer(device, &create_info, null, &vertex_buffer);
+    var memory_requirements: c.VkMemoryRequirements = undefined;
+    c.vkGetBufferMemoryRequirements(device, vertex_buffer, &memory_requirements);
+
+    var memory_properties: c.VkPhysicalDeviceMemoryProperties = undefined;
+    c.vkGetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
+
+    var preferred_memory_type_index: ?u32 = null;
+    var property_flags: u32 = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    std.debug.print("memoryTypeBits={b}\n", .{memory_requirements.memoryTypeBits});
+    for (0..memory_properties.memoryTypeCount) |i| {
+        var bit = (@as(u32, 1) << @as(u5, @intCast(i)));
+        std.debug.print("{}={b}, ", .{ i, bit });
+        if (memory_requirements.memoryTypeBits & bit > 0) {
+            if (memory_properties.memoryTypes[i].propertyFlags & property_flags == property_flags) {
+                preferred_memory_type_index = @intCast(i);
+            }
+        }
+    }
+
+    if (preferred_memory_type_index == null) {
+        std.debug.panic("Couldn't find memory index with the desired properties", .{});
+    }
+
+    var alloc_info = c.VkMemoryAllocateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = memory_requirements.size,
+        .memoryTypeIndex = preferred_memory_type_index.?,
+    };
+
+    var vertex_buffer_memory: c.VkDeviceMemory = undefined;
+    var err = c.vkAllocateMemory(device, &alloc_info, null, &vertex_buffer_memory);
+    if (err != c.VK_SUCCESS) {
+        std.debug.panic("vulkan allocate memory error: {}", .{err});
+    }
+
+    return .{
+        .buffer = vertex_buffer,
+        .memory = vertex_buffer_memory,
+    };
 }
 
 fn clean_framebuffers() void {
