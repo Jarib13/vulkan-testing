@@ -1075,3 +1075,98 @@ fn create_shader_module(bytecode: []const u8) !c.VkShaderModule {
 
     return shader_module;
 }
+
+const Model = struct {
+    name: [256]u8,
+    positions: std.ArrayList(vec3),
+    position_indices: std.ArrayList(u32),
+    texcoords: std.ArrayList(vec2),
+    texcoord_indices: std.ArrayList(u32),
+    normals: std.ArrayList(vec3),
+    normal_indices: std.ArrayList(u32),
+
+    fn init(allocator: std.mem.Allocator) Model {
+        return Model{
+            .name = undefined,
+            .positions = std.ArrayList(vec3).init(allocator),
+            .position_indices = std.ArrayList(u32).init(allocator),
+            .texcoords = std.ArrayList(vec2).init(allocator),
+            .texcoord_indices = std.ArrayList(u32).init(allocator),
+            .normals = std.ArrayList(vec3).init(allocator),
+            .normal_indices = std.ArrayList(u32).init(allocator),
+        };
+    }
+};
+
+const Obj = struct {
+    models: std.ArrayList(Model),
+
+    //materials: std.StringHashMap(Material),
+
+    fn load(allocator: std.mem.Allocator) !void {
+        var file = try std.fs.openFileAbsolute("../models/test/test.obj", .{});
+        var reader = file.reader();
+        var buffer: [1024]u8 = undefined;
+
+        //state
+
+        var model: ?Model = null;
+
+        while (true) {
+            var line = try reader.readUntilDelimiter(buffer, '\n');
+            var spaces = std.mem.split(u8, line, " ");
+
+            var char = spaces.next().?;
+
+            if (std.mem.eql(u8, char, "o")) {
+                model = Model.init(allocator);
+                @memcpy(model.name, spaces.next().?);
+            }
+
+            if (std.mem.eql(u8, char, "v")) {
+                var vec: vec3 = .{
+                    try std.fmt.parseFloat(f32, spaces.next().?),
+                    try std.fmt.parseFloat(f32, spaces.next().?),
+                    try std.fmt.parseFloat(f32, spaces.next().?),
+                };
+
+                model.positions.append(vec);
+            }
+
+            if (std.mem.eql(u8, char, "vn")) {
+                var vec: vec3 = .{
+                    try std.fmt.parseFloat(f32, spaces.next().?),
+                    try std.fmt.parseFloat(f32, spaces.next().?),
+                    try std.fmt.parseFloat(f32, spaces.next().?),
+                };
+
+                model.normals.append(vec);
+            }
+
+            if (std.mem.eql(u8, char, "vt")) {
+                var vec: vec2 = .{
+                    try std.fmt.parseFloat(f32, spaces.next().?),
+                    try std.fmt.parseFloat(f32, spaces.next().?),
+                };
+
+                model.texcoords.append(vec);
+            }
+
+            if (std.mem.eql(u8, char, "f")) {
+                for (0..3) |v| {
+                    _ = v;
+                    var vertex_indices_str = spaces.next().?;
+                    var vertex_indices = std.mem.split(u8, vertex_indices_str, "/");
+
+                    var position_index = try std.fmt.parseInt(u32, vertex_indices.next().?, 10);
+                    var texcoord_index = try std.fmt.parseInt(u32, vertex_indices.next().?, 10);
+                    var normals_index = try std.fmt.parseInt(u32, vertex_indices.next().?, 10);
+
+                    model.position_indices.append(position_index);
+                    model.texcoord_indices.append(texcoord_index);
+                    model.normals_indices.append(normals_index);
+                }
+            }
+        }
+    }
+};

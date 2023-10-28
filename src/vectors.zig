@@ -16,6 +16,8 @@ const std = @import("std");
 // const ivec4 = vectors.ivec4;
 // const iivec4 = vectors.iivec4;
 
+// const mat4 = vectors.mat4;
+
 //vec2
 
 pub const vec2 = extern struct {
