@@ -211,62 +211,81 @@ pub const vec3 = extern struct {
 
         return self.add(dir.mul(dis));
     }
+
+    pub fn multiply_m4(self: vec3, other: mat4) vec3 {
+        var result_values: @Vector(4, f32) = @splat(0);
+        var self_values: @Vector(4, f32) = .{ self.x, self.y, self.z, 1 };
+
+        for (0..4) |res_row| {
+            var value: f32 = 0;
+            for (0..4) |self_col_other_row| {
+                value += self_values[res_row] * other.values[self_col_other_row];
+            }
+            result_values[res_row] = value;
+        }
+
+        return vec3{
+            .x = result_values[0],
+            .y = result_values[1],
+            .z = result_values[2],
+        };
+    }
 };
 
 //Column Major Ordering
-const mat4 = struct {
+pub const mat4 = struct {
     values: @Vector(4 * 4, f32),
 
-    fn zeroes() mat4 {
+    pub fn zeroes() mat4 {
         return mat4{
             .values = @splat(0),
         };
     }
 
-    fn identity() mat4 {
+    pub fn identity() mat4 {
         return mat4{
             .values = .{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 },
         };
     }
 
-    fn scale(x: f32, y: f32, z: f32) mat4 {
+    pub fn scale(x: f32, y: f32, z: f32) mat4 {
         return mat4{
             .values = .{ x, 0, 0, 0, 0, y, 0, 0, 0, 0, z, 0, 0, 0, 0, 1 },
         };
     }
 
-    fn translation(x: f32, y: f32, z: f32) mat4 {
+    pub fn translation(x: f32, y: f32, z: f32) mat4 {
         return mat4{
             .values = .{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1 },
         };
     }
 
-    fn rotationY(angle: f32) mat4 {
+    pub fn rotationY(angle: f32) mat4 {
         return mat4{
             .values = .{ @cos(angle), 0, @sin(angle), 0, 0, 1, 0, 0, -@sin(angle), 0, @cos(angle), 0, 0, 0, 0, 1 },
         };
     }
 
-    fn rotationX(angle: f32) mat4 {
+    pub fn rotationX(angle: f32) mat4 {
         return mat4{
             .values = .{ 1, 0, 0, 0, 0, @cos(angle), -@sin(angle), 0, 0, @sin(angle), @cos(angle), 0, 0, 0, 0, 1 },
         };
     }
 
-    fn rotationZ(angle: f32) mat4 {
+    pub fn rotationZ(angle: f32) mat4 {
         return mat4{
             .values = .{ @cos(angle), @sin(angle), 0, 0, -@sin(angle), @cos(angle), 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 },
         };
     }
 
-    fn perspective(fov: f32, aspect_ratio: f32, near: f32, far: f32) mat4 {
+    pub fn perspective(fov: f32, aspect_ratio: f32, near: f32, far: f32) mat4 {
         var t = @tan(fov / 2);
         return mat4{
             .values = .{ 1 / (t * aspect_ratio), 0, 0, 0, 0, 1 / t, 0, 0, 0, 0, -(far + near) / (far - near), -1, 0, 0, -(2 * far * near) / (far - near), 1 },
         };
     }
 
-    fn multiply(self: mat4, other: mat4) mat4 {
+    pub fn multiply(self: mat4, other: mat4) mat4 {
         var result: mat4 = mat4.zeroes();
 
         for (0..4) |res_col| {
@@ -282,11 +301,11 @@ const mat4 = struct {
         return result;
     }
 
-    fn approx_equals(self: mat4, other: mat4) bool {
+    pub fn approx_equals(self: mat4, other: mat4) bool {
         return equals(self, other, 0.001);
     }
 
-    fn equals(self: mat4, other: mat4, tolerance: f32) bool {
+    pub fn equals(self: mat4, other: mat4, tolerance: f32) bool {
         for (0..16) |i| {
             if (!std.math.approxEqAbs(f32, self.values[i], other.values[i], tolerance))
                 return false;
@@ -295,7 +314,7 @@ const mat4 = struct {
         return true;
     }
 
-    fn print(self: mat4) void {
+    pub fn print(self: mat4) void {
         std.debug.print("\n", .{});
         for (0..4) |row| {
             std.debug.print("[ ", .{});

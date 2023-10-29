@@ -14,6 +14,8 @@ const vec4 = vectors.vec4;
 const ivec4 = vectors.ivec4;
 const iivec4 = vectors.iivec4;
 
+const mat4 = vectors.mat4;
+
 const c = @cImport({
     @cDefine("GLFW_INCLUDE_VULKAN", {});
     @cInclude("GLFW/glfw3.h");
@@ -403,7 +405,7 @@ pub fn main() !void {
     rasterization_state_create_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rasterization_state_create_info.depthClampEnable = c.VK_FALSE;
     rasterization_state_create_info.rasterizerDiscardEnable = c.VK_FALSE;
-    rasterization_state_create_info.polygonMode = c.VK_POLYGON_MODE_FILL;
+    rasterization_state_create_info.polygonMode = c.VK_POLYGON_MODE_POINT;
     rasterization_state_create_info.lineWidth = 1;
     rasterization_state_create_info.cullMode = c.VK_CULL_MODE_BACK_BIT;
     rasterization_state_create_info.frontFace = c.VK_FRONT_FACE_CLOCKWISE;
@@ -588,24 +590,45 @@ pub fn main() !void {
         }
     }
 
-    var vertex_data = [_]vec2{
-        .{ .x = 0, .y = -0.5 },
-        .{ .x = 0.5, .y = 0.5 },
-        .{ .x = -0.5, .y = 0.5 },
-        .{ .x = 0, .y = 0.5 },
-        .{ .x = -0.5, .y = -0.5 },
-        .{ .x = 0.5, .y = -0.5 },
-    };
-    var vertex_colors = [_]vec3{
-        .{ .x = 1, .y = 0, .z = 1 },
-        .{ .x = 1, .y = 0.1, .z = 0.8 },
-        .{ .x = 0.8, .y = 0.1, .z = 1 },
-        .{ .x = 0, .y = 1, .z = 1 },
-        .{ .x = 0.1, .y = 0.8, .z = 1 },
-        .{ .x = 0.1, .y = 1, .z = 0.8 },
-    };
+    // var vertex_data = [_]vec2{
+    //     .{ .x = 0, .y = -0.5 },
+    //     .{ .x = 0.5, .y = 0.5 },
+    //     .{ .x = -0.5, .y = 0.5 },
+    //     .{ .x = 0, .y = 0.5 },
+    //     .{ .x = -0.5, .y = -0.5 },
+    //     .{ .x = 0.5, .y = -0.5 },
+    // };
+    var object = try Obj.load(alloc);
 
-    var positions = try create_vertex_buffer(@sizeOf(vec2) * vertex_data.len, graphics_queue_family.?);
+    var matrix = mat4.rotationY(0.0).multiply(mat4.rotationX(0)).multiply(mat4.rotationZ(0));
+    _ = matrix;
+    var model = &object.models.items[0];
+    var vertex_data_len = model.position_indices.items.len;
+    var vertex_data: []vec3 = try alloc.alloc(vec3, vertex_data_len);
+    for (model.position_indices.items, 0..) |index, i| {
+        vertex_data[i] = object.positions.items[index].muls(40); //.multiply_m4(matrix);
+    }
+    // if (index >= object.positions.items.len) {
+    //     std.debug.print("index {} > len {}", .{ index, object.positions.items.len });
+    // } else {
+    // }
+
+    var vertex_colors_len = model.normal_indices.items.len;
+    var vertex_colors: []vec3 = try alloc.alloc(vec3, vertex_colors_len);
+    for (model.normal_indices.items, 0..) |index, i| {
+        vertex_colors[i] = object.normals.items[index];
+    }
+
+    // var vertex_colors = [_]vec3{
+    //     .{ .x = 1, .y = 0, .z = 1 },
+    //     .{ .x = 1, .y = 0.1, .z = 0.8 },
+    //     .{ .x = 0.8, .y = 0.1, .z = 1 },
+    //     .{ .x = 0, .y = 1, .z = 1 },
+    //     .{ .x = 0.1, .y = 0.8, .z = 1 },
+    //     .{ .x = 0.1, .y = 1, .z = 0.8 },
+    // };
+
+    var positions = try create_vertex_buffer(@sizeOf(vec3) * vertex_data.len, graphics_queue_family.?);
     var vertex_buffer = positions.buffer;
     var vertex_buffer_memory = positions.memory;
 
@@ -613,7 +636,7 @@ pub fn main() !void {
     var vertex_color_buffer = colors.buffer;
     var vertex_color_buffer_memory = colors.memory;
 
-    var data: [*c]vec2 = undefined;
+    var data: [*c]vec3 = undefined;
     var data_vec3: [*c]vec3 = undefined;
 
     err = c.vkBindBufferMemory(device, vertex_buffer, vertex_buffer_memory, 0);
@@ -622,13 +645,17 @@ pub fn main() !void {
         std.debug.panic("bind buffer memory error: {}", .{err});
     }
 
-    err = c.vkMapMemory(device, vertex_buffer_memory, 0, @sizeOf(vec2) * vertex_data.len, 0, @alignCast(@ptrCast(&data)));
+    err = c.vkMapMemory(device, vertex_buffer_memory, 0, @sizeOf(vec3) * vertex_data_len, 0, @alignCast(@ptrCast(&data)));
 
     if (err != c.VK_SUCCESS) {
         std.debug.panic("vulkan map memory error: {}", .{err});
     }
 
-    @memcpy(data[0..vertex_data.len], vertex_data[0..vertex_data.len]);
+    // @memcpy(data[0..vertex_data_len], vertex_data[0..vertex_data_len]);
+    for (0..vertex_data_len) |i| {
+        data[i] = vertex_data[i];
+    }
+
     c.vkUnmapMemory(device, vertex_buffer_memory);
 
     //colors
@@ -745,7 +772,7 @@ pub fn main() !void {
 
         c.vkCmdDraw(
             command_buffers[f],
-            vertex_data.len,
+            @intCast(vertex_data.len),
             1,
             0,
             0,
@@ -1078,78 +1105,115 @@ fn create_shader_module(bytecode: []const u8) !c.VkShaderModule {
 
 const Model = struct {
     name: [256]u8,
-    positions: std.ArrayList(vec3),
     position_indices: std.ArrayList(u32),
-    texcoords: std.ArrayList(vec2),
     texcoord_indices: std.ArrayList(u32),
-    normals: std.ArrayList(vec3),
     normal_indices: std.ArrayList(u32),
 
-    fn init(allocator: std.mem.Allocator) Model {
+    fn init(allocator: std.mem.Allocator) !Model {
         return Model{
             .name = undefined,
-            .positions = std.ArrayList(vec3).init(allocator),
-            .position_indices = std.ArrayList(u32).init(allocator),
-            .texcoords = std.ArrayList(vec2).init(allocator),
-            .texcoord_indices = std.ArrayList(u32).init(allocator),
-            .normals = std.ArrayList(vec3).init(allocator),
-            .normal_indices = std.ArrayList(u32).init(allocator),
+            .position_indices = try std.ArrayList(u32).initCapacity(allocator, 1024 * 16),
+            .texcoord_indices = try std.ArrayList(u32).initCapacity(allocator, 1024 * 16),
+            .normal_indices = try std.ArrayList(u32).initCapacity(allocator, 1024 * 16),
         };
     }
+
+    fn deinit(self: *Model) void {
+        self.positions.deinit();
+        self.position_indices.deinit();
+        self.texcoords.deinit();
+        self.texcoord_indices.deinit();
+        self.normals.deinit();
+        self.normal_indices.deinit();
+    }
 };
+
+test "obj" {
+    var timer = try std.time.Timer.start();
+    var object = try Obj.load(std.testing.allocator);
+    std.debug.print("\n\nObject read time elapsed: {}ms\n\n", .{timer.lap() / std.time.ns_per_ms});
+    object.deinit();
+}
 
 const Obj = struct {
     models: std.ArrayList(Model),
 
+    positions: std.ArrayList(vec3),
+    texcoords: std.ArrayList(vec2),
+    normals: std.ArrayList(vec3),
+
     //materials: std.StringHashMap(Material),
 
-    fn load(allocator: std.mem.Allocator) !void {
-        var file = try std.fs.openFileAbsolute("../models/test/test.obj", .{});
-        var reader = file.reader();
+    fn load(allocator: std.mem.Allocator) !Obj {
+        var object = Obj{
+            .models = std.ArrayList(Model).init(allocator),
+            .positions = try std.ArrayList(vec3).initCapacity(allocator, 1024 * 16),
+            .texcoords = try std.ArrayList(vec2).initCapacity(allocator, 1024 * 16),
+            .normals = try std.ArrayList(vec3).initCapacity(allocator, 1024 * 16),
+        };
+
+        var file = try std.fs.cwd().openFile("../models/test/test.obj", .{});
+        defer file.close();
+
+        var buffered_reader = std.io.bufferedReader(file.reader());
+        var reader = buffered_reader.reader();
+        //var reader = file.reader();
         var buffer: [1024]u8 = undefined;
 
         //state
 
         var model: ?Model = null;
-
-        while (true) {
-            var line = try reader.readUntilDelimiter(buffer, '\n');
+        while (try reader.readUntilDelimiterOrEof(&buffer, '\n')) |line| {
             var spaces = std.mem.split(u8, line, " ");
 
             var char = spaces.next().?;
 
             if (std.mem.eql(u8, char, "o")) {
-                model = Model.init(allocator);
-                @memcpy(model.name, spaces.next().?);
+                if (model != null) {
+                    try object.models.append(model.?);
+                    // std.debug.print("M{} -- P {},PI {} T{}, TI{}, N{}, NI{},\n", .{
+                    //     obj.models.items.len,
+                    //     model.?.positions.items.len,
+                    //     model.?.position_indices.items.len,
+                    //     model.?.texcoords.items.len,
+                    //     model.?.texcoord_indices.items.len,
+                    //     model.?.normals.items.len,
+                    //     model.?.normal_indices.items.len,
+                    // });
+                }
+
+                model = try Model.init(allocator);
+                var name = spaces.next().?;
+                @memcpy(model.?.name[0..name.len], name);
             }
 
             if (std.mem.eql(u8, char, "v")) {
                 var vec: vec3 = .{
-                    try std.fmt.parseFloat(f32, spaces.next().?),
-                    try std.fmt.parseFloat(f32, spaces.next().?),
-                    try std.fmt.parseFloat(f32, spaces.next().?),
+                    .x = try std.fmt.parseFloat(f32, spaces.next().?),
+                    .y = try std.fmt.parseFloat(f32, spaces.next().?),
+                    .z = try std.fmt.parseFloat(f32, spaces.next().?),
                 };
 
-                model.positions.append(vec);
+                try object.positions.append(vec);
             }
 
             if (std.mem.eql(u8, char, "vn")) {
                 var vec: vec3 = .{
-                    try std.fmt.parseFloat(f32, spaces.next().?),
-                    try std.fmt.parseFloat(f32, spaces.next().?),
-                    try std.fmt.parseFloat(f32, spaces.next().?),
+                    .x = try std.fmt.parseFloat(f32, spaces.next().?),
+                    .y = try std.fmt.parseFloat(f32, spaces.next().?),
+                    .z = try std.fmt.parseFloat(f32, spaces.next().?),
                 };
 
-                model.normals.append(vec);
+                try object.normals.append(vec);
             }
 
             if (std.mem.eql(u8, char, "vt")) {
                 var vec: vec2 = .{
-                    try std.fmt.parseFloat(f32, spaces.next().?),
-                    try std.fmt.parseFloat(f32, spaces.next().?),
+                    .x = try std.fmt.parseFloat(f32, spaces.next().?),
+                    .y = try std.fmt.parseFloat(f32, spaces.next().?),
                 };
 
-                model.texcoords.append(vec);
+                try object.texcoords.append(vec);
             }
 
             if (std.mem.eql(u8, char, "f")) {
@@ -1158,15 +1222,32 @@ const Obj = struct {
                     var vertex_indices_str = spaces.next().?;
                     var vertex_indices = std.mem.split(u8, vertex_indices_str, "/");
 
-                    var position_index = try std.fmt.parseInt(u32, vertex_indices.next().?, 10);
-                    var texcoord_index = try std.fmt.parseInt(u32, vertex_indices.next().?, 10);
-                    var normals_index = try std.fmt.parseInt(u32, vertex_indices.next().?, 10);
+                    var position_index = try std.fmt.parseInt(u32, vertex_indices.next().?, 10) - 1;
+                    var texcoord_index = try std.fmt.parseInt(u32, vertex_indices.next().?, 10) - 1;
+                    var normals_index = try std.fmt.parseInt(u32, vertex_indices.next().?, 10) - 1;
 
-                    model.position_indices.append(position_index);
-                    model.texcoord_indices.append(texcoord_index);
-                    model.normals_indices.append(normals_index);
+                    try model.?.position_indices.append(position_index);
+                    try model.?.texcoord_indices.append(texcoord_index);
+                    try model.?.normal_indices.append(normals_index);
                 }
             }
         }
+
+        if (model != null) {
+            try object.models.append(model.?);
+        }
+
+        return object;
+    }
+
+    fn deinit(self: *Obj) void {
+        for (self.models.items) |*model| {
+            model.deinit();
+        }
+
+        self.positions.deinit();
+        self.texcoords.deinit();
+        self.normals.deinit();
+        self.models.deinit();
     }
 };
