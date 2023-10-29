@@ -353,12 +353,12 @@ pub fn main() !void {
 
     var vertex_position_binding_description = c.VkVertexInputBindingDescription{
         .binding = 0,
-        .stride = @sizeOf(vec2),
+        .stride = @sizeOf(vec3),
         .inputRate = c.VK_VERTEX_INPUT_RATE_VERTEX,
     };
     var vertex_position_attribute_description = c.VkVertexInputAttributeDescription{
         .binding = 0,
-        .format = c.VK_FORMAT_R32G32_SFLOAT,
+        .format = c.VK_FORMAT_R32G32B32_SFLOAT,
         .location = 0,
         .offset = 0,
     };
@@ -405,7 +405,7 @@ pub fn main() !void {
     rasterization_state_create_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rasterization_state_create_info.depthClampEnable = c.VK_FALSE;
     rasterization_state_create_info.rasterizerDiscardEnable = c.VK_FALSE;
-    rasterization_state_create_info.polygonMode = c.VK_POLYGON_MODE_POINT;
+    rasterization_state_create_info.polygonMode = c.VK_POLYGON_MODE_FILL;
     rasterization_state_create_info.lineWidth = 1;
     rasterization_state_create_info.cullMode = c.VK_CULL_MODE_BACK_BIT;
     rasterization_state_create_info.frontFace = c.VK_FRONT_FACE_CLOCKWISE;
@@ -598,20 +598,15 @@ pub fn main() !void {
     //     .{ .x = -0.5, .y = -0.5 },
     //     .{ .x = 0.5, .y = -0.5 },
     // };
-    var object = try Obj.load(alloc);
+    var object = try Obj.load(alloc, true);
 
-    var matrix = mat4.rotationY(0.0).multiply(mat4.rotationX(0)).multiply(mat4.rotationZ(0));
-    _ = matrix;
+    var matrix = mat4.rotationY(2.8).multiply(mat4.rotationX(std.math.pi)).multiply(mat4.rotationZ(0)).multiply(mat4.translation(0.1, 0, 0)).multiply(mat4.scale(40, 40, 40));
     var model = &object.models.items[0];
     var vertex_data_len = model.position_indices.items.len;
     var vertex_data: []vec3 = try alloc.alloc(vec3, vertex_data_len);
     for (model.position_indices.items, 0..) |index, i| {
-        vertex_data[i] = object.positions.items[index].muls(40); //.multiply_m4(matrix);
+        vertex_data[i] = object.positions.items[index].multiply_m4(matrix);
     }
-    // if (index >= object.positions.items.len) {
-    //     std.debug.print("index {} > len {}", .{ index, object.positions.items.len });
-    // } else {
-    // }
 
     var vertex_colors_len = model.normal_indices.items.len;
     var vertex_colors: []vec3 = try alloc.alloc(vec3, vertex_colors_len);
@@ -1130,7 +1125,7 @@ const Model = struct {
 
 test "obj" {
     var timer = try std.time.Timer.start();
-    var object = try Obj.load(std.testing.allocator);
+    var object = try Obj.load(std.testing.allocator, false);
     std.debug.print("\n\nObject read time elapsed: {}ms\n\n", .{timer.lap() / std.time.ns_per_ms});
     object.deinit();
 }
@@ -1144,7 +1139,7 @@ const Obj = struct {
 
     //materials: std.StringHashMap(Material),
 
-    fn load(allocator: std.mem.Allocator) !Obj {
+    fn load(allocator: std.mem.Allocator, unified: bool) !Obj {
         var object = Obj{
             .models = std.ArrayList(Model).init(allocator),
             .positions = try std.ArrayList(vec3).initCapacity(allocator, 1024 * 16),
@@ -1170,6 +1165,10 @@ const Obj = struct {
 
             if (std.mem.eql(u8, char, "o")) {
                 if (model != null) {
+                    if (unified) {
+                        continue;
+                    }
+
                     try object.models.append(model.?);
                     // std.debug.print("M{} -- P {},PI {} T{}, TI{}, N{}, NI{},\n", .{
                     //     obj.models.items.len,

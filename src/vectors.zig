@@ -216,12 +216,12 @@ pub const vec3 = extern struct {
         var result_values: @Vector(4, f32) = @splat(0);
         var self_values: @Vector(4, f32) = .{ self.x, self.y, self.z, 1 };
 
-        for (0..4) |res_row| {
+        for (0..4) |c| {
             var value: f32 = 0;
-            for (0..4) |self_col_other_row| {
-                value += self_values[res_row] * other.values[self_col_other_row];
+            for (0..4) |self_c_other_col| {
+                value += self_values[self_c_other_col] * other.values[self_c_other_col * 4 + c];
             }
-            result_values[res_row] = value;
+            result_values[c] = value;
         }
 
         return vec3{
