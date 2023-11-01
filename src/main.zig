@@ -42,7 +42,14 @@ var swapchain_image_views: []c.VkImageView = undefined;
 var viewport: c.VkViewport = undefined;
 var scissor: c.VkRect2D = undefined;
 
+var graphics_queue_family: ?u32 = null;
+var surface_queue_family: ?u32 = null;
+
+var graphics_queue: c.VkQueue = undefined;
+var surface_queue: c.VkQueue = undefined;
+
 var render_pass: c.VkRenderPass = undefined;
+var command_pool: c.VkCommandPool = undefined;
 
 const max_frames_in_flight: u32 = 4;
 var render_finished_semaphores: []c.VkSemaphore = undefined;
@@ -176,9 +183,6 @@ pub fn main() !void {
     c.vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, queue_families);
     std.debug.print("{} queue families on device 0\n", .{queue_family_count});
 
-    var graphics_queue_family: ?u32 = null;
-    var surface_queue_family: ?u32 = null;
-
     for (0..queue_family_count) |index| {
         var i: u32 = @intCast(index);
         if ((queue_families[i].queueFlags & c.VK_QUEUE_GRAPHICS_BIT) > 0) {
@@ -309,9 +313,7 @@ pub fn main() !void {
 
     err = c.vkCreateDevice(physical_device, &device_create_info, null, &device);
 
-    var graphics_queue: c.VkQueue = undefined;
     c.vkGetDeviceQueue(device, graphics_queue_family.?, 0, &graphics_queue);
-    var surface_queue: c.VkQueue = undefined;
     c.vkGetDeviceQueue(device, surface_queue_family.?, 0, &surface_queue);
 
     // create swap chain
@@ -472,30 +474,63 @@ pub fn main() !void {
     };
     //no zeroes
 
+    var depth_attachment_description = c.VkAttachmentDescription{
+        .format = depth_buffer_format,
+        .samples = c.VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = c.VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = c.VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .stencilLoadOp = c.VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .stencilStoreOp = c.VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    };
+
+    var depth_stencil_state_create_info = c.VkPipelineDepthStencilStateCreateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable = c.VK_TRUE,
+        .depthWriteEnable = c.VK_TRUE,
+        .depthCompareOp = c.VK_COMPARE_OP_LESS,
+        .maxDepthBounds = 1.0,
+        .minDepthBounds = 0.0,
+        .depthBoundsTestEnable = c.VK_FALSE,
+        .stencilTestEnable = c.VK_FALSE,
+    };
+
     var color_attachment_reference = c.VkAttachmentReference{
         .attachment = 0,
         .layout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    };
+
+    var depth_attachment_reference = c.VkAttachmentReference{
+        .attachment = 1,
+        .layout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
     };
 
     var subpass_description = c.VkSubpassDescription{
         .pipelineBindPoint = c.VK_PIPELINE_BIND_POINT_GRAPHICS,
         .colorAttachmentCount = 1,
         .pColorAttachments = &color_attachment_reference,
+        .pDepthStencilAttachment = &depth_attachment_reference,
     };
 
     var subpass_dependency = c.VkSubpassDependency{
         .srcSubpass = c.VK_SUBPASS_EXTERNAL,
         .dstSubpass = 0,
-        .srcStageMask = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcStageMask = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | c.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
         .srcAccessMask = 0,
-        .dstStageMask = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        .dstAccessMask = c.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstStageMask = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | c.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+        .dstAccessMask = c.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | c.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+    };
+
+    var attachments = [_]c.VkAttachmentDescription{
+        color_attachment_description,
+        depth_attachment_description,
     };
 
     var render_pass_create_info = c.VkRenderPassCreateInfo{
         .sType = c.VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-        .attachmentCount = 1,
-        .pAttachments = &color_attachment_description,
+        .attachmentCount = attachments.len,
+        .pAttachments = &attachments,
         .subpassCount = 1,
         .pSubpasses = &subpass_description,
         .dependencyCount = 1,
@@ -503,8 +538,6 @@ pub fn main() !void {
     };
 
     err = c.vkCreateRenderPass(device, &render_pass_create_info, null, &render_pass);
-
-    try create_framebuffers();
 
     if (err != c.VK_SUCCESS) {
         std.debug.print("Failed to create render pass. error code: {}", .{err});
@@ -521,7 +554,7 @@ pub fn main() !void {
         .pViewportState = &viewport_state_create_info,
         .pRasterizationState = &rasterization_state_create_info,
         .pMultisampleState = &multisample_state_create_info,
-        .pDepthStencilState = null,
+        .pDepthStencilState = &depth_stencil_state_create_info,
         .pColorBlendState = &color_blend_state_create_info,
         .pDynamicState = &dynamic_state_create_info,
         .layout = pipeline_layout,
@@ -538,7 +571,6 @@ pub fn main() !void {
         std.debug.print("Failed to create graphics pipeline. error code: {}", .{err});
     }
 
-    var command_pool: c.VkCommandPool = undefined;
     var command_pool_create_info = c.VkCommandPoolCreateInfo{
         .sType = c.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
         .flags = c.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
@@ -550,6 +582,9 @@ pub fn main() !void {
     if (err != c.VK_SUCCESS) {
         std.debug.print("Failed to create command pool. error code: {}", .{err});
     }
+
+    create_depth_buffer();
+    try create_framebuffers();
 
     var command_buffers: []c.VkCommandBuffer = try alloc.alloc(c.VkCommandBuffer, max_frames_in_flight);
     var command_buffer_allocate_info = c.VkCommandBufferAllocateInfo{
@@ -600,7 +635,22 @@ pub fn main() !void {
     // };
     var object = try Obj.load(alloc, true);
 
-    var matrix = mat4.rotationY(2.8).multiply(mat4.rotationX(std.math.pi)).multiply(mat4.rotationZ(0)).multiply(mat4.translation(0.1, 0, 0)).multiply(mat4.scale(40, 40, 40));
+    var s: f32 = 0.006;
+    var matrix = mat4.identity();
+    matrix = matrix.multiply(mat4.rotationY(1));
+    matrix = matrix.multiply(mat4.rotationX(std.math.pi));
+    matrix = matrix.multiply(mat4.rotationZ(0));
+    matrix = matrix.multiply(mat4.translation(0.0, 0.0, -1.0));
+    matrix = matrix.multiply(mat4.scale(s, s, s));
+    var fw: f32 = @floatFromInt(swapchain_extent.width);
+    var fh: f32 = @floatFromInt(swapchain_extent.height);
+    matrix = matrix.multiply(mat4.perspective(
+        (std.math.pi / 4.0),
+        fh / fw,
+        0.1,
+        100,
+    ));
+
     var model = &object.models.items[0];
     var vertex_data_len = model.position_indices.items.len;
     var vertex_data: []vec3 = try alloc.alloc(vec3, vertex_data_len);
@@ -623,11 +673,11 @@ pub fn main() !void {
     //     .{ .x = 0.1, .y = 1, .z = 0.8 },
     // };
 
-    var positions = try create_vertex_buffer(@sizeOf(vec3) * vertex_data.len, graphics_queue_family.?);
+    var positions = try create_vertex_buffer(@sizeOf(vec3) * vertex_data.len);
     var vertex_buffer = positions.buffer;
     var vertex_buffer_memory = positions.memory;
 
-    var colors = try create_vertex_buffer(@sizeOf(vec3) * vertex_colors.len, graphics_queue_family.?);
+    var colors = try create_vertex_buffer(@sizeOf(vec3) * vertex_colors.len);
     var vertex_color_buffer = colors.buffer;
     var vertex_color_buffer_memory = colors.memory;
 
@@ -715,9 +765,17 @@ pub fn main() !void {
             std.debug.print("Failed to begin recording command buffer. error code: {}", .{err});
         }
 
-        var clear_color = c.VkClearValue{
-            .color = c.VkClearColorValue{
-                .float32 = [4]f32{ 0, 0, 1, 1 },
+        var clear_values = [_]c.VkClearValue{
+            c.VkClearValue{
+                .color = c.VkClearColorValue{
+                    .float32 = [4]f32{ 0, 0, 1, 1 },
+                },
+            },
+            c.VkClearValue{
+                .depthStencil = c.VkClearDepthStencilValue{
+                    .depth = 1,
+                    .stencil = 0,
+                },
             },
         };
         var render_pass_begin_info = c.VkRenderPassBeginInfo{
@@ -728,8 +786,8 @@ pub fn main() !void {
                 .offset = .{ .x = 0, .y = 0 },
                 .extent = swapchain_extent,
             },
-            .clearValueCount = 1,
-            .pClearValues = &clear_color,
+            .clearValueCount = clear_values.len,
+            .pClearValues = &clear_values,
         };
         c.vkCmdBeginRenderPass(command_buffers[f], &render_pass_begin_info, c.VK_SUBPASS_CONTENTS_INLINE);
 
@@ -844,7 +902,7 @@ pub fn main() !void {
     c.glfwTerminate();
 }
 
-fn create_vertex_buffer(size: u64, graphics_queue_family: u32) !struct { buffer: c.VkBuffer, memory: c.VkDeviceMemory } {
+fn create_vertex_buffer(size: u64) !struct { buffer: c.VkBuffer, memory: c.VkDeviceMemory } {
     var vertex_buffer: c.VkBuffer = undefined;
 
     var create_info = c.VkBufferCreateInfo{
@@ -860,21 +918,8 @@ fn create_vertex_buffer(size: u64, graphics_queue_family: u32) !struct { buffer:
     var memory_requirements: c.VkMemoryRequirements = undefined;
     c.vkGetBufferMemoryRequirements(device, vertex_buffer, &memory_requirements);
 
-    var memory_properties: c.VkPhysicalDeviceMemoryProperties = undefined;
-    c.vkGetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
-
-    var preferred_memory_type_index: ?u32 = null;
     var property_flags: u32 = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    std.debug.print("memoryTypeBits={b}\n", .{memory_requirements.memoryTypeBits});
-    for (0..memory_properties.memoryTypeCount) |i| {
-        var bit = (@as(u32, 1) << @as(u5, @intCast(i)));
-        std.debug.print("{}={b}, ", .{ i, bit });
-        if (memory_requirements.memoryTypeBits & bit > 0) {
-            if (memory_properties.memoryTypes[i].propertyFlags & property_flags == property_flags) {
-                preferred_memory_type_index = @intCast(i);
-            }
-        }
-    }
+    var preferred_memory_type_index = find_memory_type(memory_requirements.memoryTypeBits, property_flags);
 
     if (preferred_memory_type_index == null) {
         std.debug.panic("Couldn't find memory index with the desired properties", .{});
@@ -896,6 +941,25 @@ fn create_vertex_buffer(size: u64, graphics_queue_family: u32) !struct { buffer:
         .buffer = vertex_buffer,
         .memory = vertex_buffer_memory,
     };
+}
+
+fn find_memory_type(memory_type_bits: u32, property_flags: u32) ?u32 {
+    var memory_properties: c.VkPhysicalDeviceMemoryProperties = undefined;
+    c.vkGetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
+
+    var preferred_memory_type_index: ?u32 = null;
+    //std.debug.print("memoryTypeBits={b}\n", .{memory_requirements.memoryTypeBits});
+    for (0..memory_properties.memoryTypeCount) |i| {
+        var bit = (@as(u32, 1) << @as(u5, @intCast(i)));
+        // std.debug.print("{}={b}, ", .{ i, bit });
+        if (memory_type_bits & bit > 0) {
+            if (memory_properties.memoryTypes[i].propertyFlags & property_flags == property_flags) {
+                preferred_memory_type_index = @intCast(i);
+            }
+        }
+    }
+
+    return preferred_memory_type_index;
 }
 
 fn clean_framebuffers() void {
@@ -1027,16 +1091,226 @@ fn create_swapchain() !void {
     }
 }
 
+fn create_image(
+    width: u32,
+    height: u32,
+    format: c.VkFormat,
+    tiling: c.VkImageTiling,
+    usage: u32,
+    memory_property_flags: u32,
+    image: *c.VkImage,
+    image_memory: *c.VkDeviceMemory,
+) void {
+    // var image: c.VkImage = undefined;
+    // var image_memory: c.VkDeviceMemory = undefined;
+
+    var create_info = c.VkImageCreateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .extent = c.VkExtent3D{ .width = width, .height = height, .depth = 1 },
+        .arrayLayers = 1,
+        .mipLevels = 1,
+        .flags = 0,
+        .format = format,
+        .imageType = c.VK_IMAGE_TYPE_2D,
+        .initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED,
+        .tiling = tiling,
+        .usage = usage,
+        .samples = c.VK_SAMPLE_COUNT_1_BIT,
+        .sharingMode = c.VK_SHARING_MODE_EXCLUSIVE,
+    };
+
+    _ = c.vkCreateImage(device, &create_info, null, image);
+
+    var memory_requirements: c.VkMemoryRequirements = undefined;
+    c.vkGetImageMemoryRequirements(device, image.*, &memory_requirements);
+    var allocation_info = c.VkMemoryAllocateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = memory_requirements.size,
+        .memoryTypeIndex = find_memory_type(memory_requirements.memoryTypeBits, memory_property_flags).?,
+    };
+    _ = c.vkAllocateMemory(device, &allocation_info, null, image_memory);
+
+    _ = c.vkBindImageMemory(device, image.*, image_memory.*, 0);
+}
+
+fn create_image_view(image: c.VkImage, format: c.VkFormat, aspect_mask: c.VkImageAspectFlags) c.VkImageView {
+    var create_info = c.VkImageViewCreateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = image,
+        .format = format,
+        .viewType = c.VK_IMAGE_VIEW_TYPE_2D,
+        .subresourceRange = c.VkImageSubresourceRange{
+            .aspectMask = aspect_mask,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        },
+    };
+
+    var image_view: c.VkImageView = undefined;
+    _ = c.vkCreateImageView(device, &create_info, null, &image_view);
+
+    return image_view;
+}
+
+fn begin_temp_command_buffer() c.VkCommandBuffer {
+    var alloc_info = c.VkCommandBufferAllocateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = command_pool,
+        .commandBufferCount = 1,
+        .level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+    };
+
+    var command_buffer: c.VkCommandBuffer = undefined;
+    _ = c.vkAllocateCommandBuffers(device, &alloc_info, &command_buffer);
+
+    var begin_info = c.VkCommandBufferBeginInfo{
+        .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+
+    _ = c.vkBeginCommandBuffer(command_buffer, &begin_info);
+
+    return command_buffer;
+}
+
+fn end_temp_command_buffer(command_buffer: c.VkCommandBuffer) void {
+    _ = c.vkEndCommandBuffer(command_buffer);
+
+    var submit_info = c.VkSubmitInfo{
+        .sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &command_buffer,
+    };
+
+    _ = c.vkQueueSubmit(graphics_queue, 1, &submit_info, null);
+    _ = c.vkQueueWaitIdle(graphics_queue);
+
+    c.vkFreeCommandBuffers(device, command_pool, 1, &command_buffer);
+}
+
+fn copy_buffer(src: c.VkBuffer, dst: c.VkBuffer, size: u64) void {
+    var cmd_buffer = begin_temp_command_buffer();
+
+    var copy_region = c.VkBufferCopy{
+        .size = size,
+        .dstOffset = 0,
+        .srcOffset = 0,
+    };
+
+    c.vkCmdCopyBuffer(cmd_buffer, src, dst, 1, copy_region);
+
+    end_temp_command_buffer(cmd_buffer);
+}
+
+fn transition_image_layout(image: c.VkImage, old_layout: c.VkImageLayout, new_layout: c.VkImageLayout) void {
+    var cmd_buffer = begin_temp_command_buffer();
+
+    var src_stage: u32 = undefined;
+    var dst_stage: u32 = undefined;
+
+    var image_memory_barrier = c.VkImageMemoryBarrier{
+        .sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = old_layout,
+        .newLayout = new_layout,
+        .srcQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED,
+        .image = image,
+        .subresourceRange = c.VkImageSubresourceRange{
+            .aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        },
+        .srcAccessMask = 0,
+        .dstAccessMask = 0,
+    };
+
+    if (old_layout == c.VK_IMAGE_LAYOUT_UNDEFINED and new_layout == c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+        image_memory_barrier.srcAccessMask = 0;
+        image_memory_barrier.dstAccessMask = c.VK_ACCESS_TRANSFER_WRITE_BIT;
+
+        src_stage = c.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        dst_stage = c.VK_PIPELINE_STAGE_TRANSFER_BIT;
+    } else if (old_layout == c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL and new_layout == c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+        image_memory_barrier.srcAccessMask = c.VK_ACCESS_TRANSFER_WRITE_BIT;
+        image_memory_barrier.dstAccessMask = c.VK_ACCESS_SHADER_READ_BIT;
+
+        src_stage = c.VK_PIPELINE_STAGE_TRANSFER_BIT;
+        dst_stage = c.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    } else if (old_layout == c.VK_IMAGE_LAYOUT_UNDEFINED and new_layout == c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+        image_memory_barrier.srcAccessMask = 0;
+        image_memory_barrier.dstAccessMask = c.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | c.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+        src_stage = c.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        dst_stage = c.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+
+        image_memory_barrier.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_DEPTH_BIT;
+    } else {
+        std.debug.panic("Invalid layout transition", .{});
+    }
+
+    c.vkCmdPipelineBarrier(
+        cmd_buffer,
+        src_stage,
+        dst_stage,
+        0,
+        0,
+        null,
+        0,
+        null,
+        1,
+        &image_memory_barrier,
+    );
+
+    end_temp_command_buffer(cmd_buffer);
+}
+
+fn create_texture_image() void {}
+
+var depth_image: c.VkImage = undefined;
+var depth_image_memory: c.VkDeviceMemory = undefined;
+var depth_image_view: c.VkImageView = undefined;
+var depth_buffer_format: u32 = c.VK_FORMAT_D32_SFLOAT;
+
+fn create_depth_buffer() void {
+    create_image(
+        swapchain_extent.width,
+        swapchain_extent.height,
+        depth_buffer_format,
+        c.VK_IMAGE_TILING_OPTIMAL,
+        c.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        &depth_image,
+        &depth_image_memory,
+    );
+
+    depth_image_view = create_image_view(
+        depth_image,
+        depth_buffer_format,
+        c.VK_IMAGE_ASPECT_DEPTH_BIT,
+    );
+
+    transition_image_layout(
+        depth_image,
+        c.VK_IMAGE_LAYOUT_UNDEFINED,
+        c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    );
+}
+
 //depends on swapchain, swapchain image views, and render pass
 fn create_framebuffers() !void {
     swapchain_framebuffers = try alloc.alloc(c.VkFramebuffer, swapchain_image_views.len);
 
     for (swapchain_framebuffers, swapchain_image_views) |*framebuffer, swapchain_image_view| {
+        var attachments = [_]c.VkImageView{ swapchain_image_view, depth_image_view };
         var framebuffer_create_info = c.VkFramebufferCreateInfo{
             .sType = c.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
             .renderPass = render_pass,
-            .attachmentCount = 1,
-            .pAttachments = &swapchain_image_view,
+            .attachmentCount = attachments.len,
+            .pAttachments = &attachments,
             .width = swapchain_extent.width,
             .height = swapchain_extent.height,
             .layers = 1,
