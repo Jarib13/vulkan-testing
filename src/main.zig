@@ -446,12 +446,29 @@ pub fn main() !void {
     color_blend_state_create_info.blendConstants[2] = 0;
     color_blend_state_create_info.blendConstants[3] = 0;
 
+    var ubo_layout_binding = c.VkDescriptorSetLayoutBinding{
+        .binding = 0,
+        .descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = 1,
+        .stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT,
+        .pImmutableSamplers = null,
+    };
+
+    var ubo_layout: c.VkDescriptorSetLayout = undefined;
+    var ubo_layout_create_info = c.VkDescriptorSetLayoutCreateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 1,
+        .pBindings = &ubo_layout_binding,
+    };
+
+    _ = c.vkCreateDescriptorSetLayout(device, &ubo_layout_create_info, null, &ubo_layout);
+
     var pipeline_layout: c.VkPipelineLayout = undefined;
 
     var pipeline_layout_create_info = c.VkPipelineLayoutCreateInfo{
         .sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .setLayoutCount = 0,
-        .pSetLayouts = null,
+        .setLayoutCount = 1,
+        .pSetLayouts = &ubo_layout,
         .pushConstantRangeCount = 0,
         .pPushConstantRanges = 0,
     };
@@ -460,6 +477,92 @@ pub fn main() !void {
     err = c.vkCreatePipelineLayout(device, &pipeline_layout_create_info, null, &pipeline_layout);
     if (err != c.VK_SUCCESS) {
         std.debug.print("Failed to create pipeline layout. error code: {}", .{err});
+    }
+
+    const UBO = extern struct {
+        transform: mat4,
+    };
+
+    var ubo_buffer_size: u64 = @sizeOf(UBO);
+
+    var uniform_buffers = try alloc.alloc(c.VkBuffer, max_frames_in_flight);
+    var uniform_buffers_memory = try alloc.alloc(c.VkDeviceMemory, max_frames_in_flight);
+    var uniform_buffers_mapped = try alloc.alloc([*c]UBO, max_frames_in_flight);
+
+    for (0..max_frames_in_flight) |i| {
+        create_buffer(
+            c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            ubo_buffer_size,
+            &uniform_buffers[i],
+            &uniform_buffers_memory[i],
+            c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        );
+
+        err = c.vkMapMemory(device, uniform_buffers_memory[i], 0, ubo_buffer_size, 0, @ptrCast(&uniform_buffers_mapped[i]));
+
+        if (err != c.VK_SUCCESS) {
+            std.debug.panic("Map memory error: {}", .{err});
+        }
+    }
+
+    var descriptor_pool_size = c.VkDescriptorPoolSize{
+        .type = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = max_frames_in_flight,
+    };
+
+    var descriptor_pool_create_info = c.VkDescriptorPoolCreateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .poolSizeCount = 1,
+        .pPoolSizes = &descriptor_pool_size,
+        .maxSets = max_frames_in_flight,
+    };
+
+    var descriptor_pool: c.VkDescriptorPool = undefined;
+
+    err = c.vkCreateDescriptorPool(device, &descriptor_pool_create_info, null, &descriptor_pool);
+    if (err != c.VK_SUCCESS) {
+        std.debug.panic("failed to create descriptor pool: error {}\n", .{err});
+    }
+
+    var descriptor_set_layouts = try alloc.alloc(c.VkDescriptorSetLayout, max_frames_in_flight);
+    for (0..max_frames_in_flight) |i| {
+        descriptor_set_layouts[i] = ubo_layout;
+    }
+
+    var descriptor_set_alloc_info = c.VkDescriptorSetAllocateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = descriptor_pool,
+        .descriptorSetCount = max_frames_in_flight,
+        .pSetLayouts = @ptrCast(descriptor_set_layouts),
+    };
+
+    var descriptor_sets = try alloc.alloc(c.VkDescriptorSet, max_frames_in_flight);
+    err = c.vkAllocateDescriptorSets(device, &descriptor_set_alloc_info, @ptrCast(descriptor_sets));
+
+    if (err != c.VK_SUCCESS) {
+        std.debug.panic("failed to allocate descriptor sets: error {}\n", .{err});
+    }
+
+    for (0..max_frames_in_flight) |i| {
+        var descriptor_buffer_info = c.VkDescriptorBufferInfo{
+            .buffer = uniform_buffers[i],
+            .offset = 0,
+            .range = ubo_buffer_size,
+        };
+
+        var write_descriptor_set = c.VkWriteDescriptorSet{
+            .sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = descriptor_sets[i],
+            .dstBinding = 0,
+            .dstArrayElement = 0,
+            .descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount = 1,
+            .pBufferInfo = &descriptor_buffer_info,
+            .pImageInfo = null,
+            .pTexelBufferView = null,
+        };
+
+        c.vkUpdateDescriptorSets(device, 1, &write_descriptor_set, 0, null);
     }
 
     var color_attachment_description = c.VkAttachmentDescription{
@@ -635,21 +738,23 @@ pub fn main() !void {
     // };
     var object = try Obj.load(alloc, true);
 
-    var s: f32 = 0.006;
+    var s: f32 = 0.004;
     var matrix = mat4.identity();
-    matrix = matrix.multiply(mat4.rotationY(1));
+    matrix = matrix.multiply(mat4.rotationY(0.2));
     matrix = matrix.multiply(mat4.rotationX(std.math.pi));
     matrix = matrix.multiply(mat4.rotationZ(0));
-    matrix = matrix.multiply(mat4.translation(0.0, 0.0, -1.0));
+    matrix = matrix.multiply(mat4.translation(0.0, 0.0, 0));
     matrix = matrix.multiply(mat4.scale(s, s, s));
     var fw: f32 = @floatFromInt(swapchain_extent.width);
+    _ = fw;
     var fh: f32 = @floatFromInt(swapchain_extent.height);
-    matrix = matrix.multiply(mat4.perspective(
-        (std.math.pi / 4.0),
-        fh / fw,
-        0.1,
-        100,
-    ));
+    _ = fh;
+    // matrix = matrix.multiply(mat4.perspective(
+    //     (std.math.pi / 4.0),
+    //     fw / fh,
+    //     0.1,
+    //     100,
+    // ));
 
     var model = &object.models.items[0];
     var vertex_data_len = model.position_indices.items.len;
@@ -823,6 +928,17 @@ pub fn main() !void {
             @ptrCast(&buffer_offsets),
         );
 
+        c.vkCmdBindDescriptorSets(
+            command_buffers[f],
+            c.VK_PIPELINE_BIND_POINT_GRAPHICS,
+            pipeline_layout,
+            0,
+            1,
+            &descriptor_sets[f],
+            0,
+            null,
+        );
+
         c.vkCmdDraw(
             command_buffers[f],
             @intCast(vertex_data.len),
@@ -837,6 +953,13 @@ pub fn main() !void {
         if (err != c.VK_SUCCESS) {
             std.debug.print("Error on command buffer end. Error code: {}", .{err});
         }
+
+        var ss: f32 = @floatCast(c.glfwGetTime());
+        var temp_ubo = UBO{
+            .transform = mat4.scale(ss, ss, ss),
+        };
+
+        uniform_buffers_mapped[f].* = temp_ubo;
 
         var submit_info = c.VkSubmitInfo{
             .sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -941,6 +1064,47 @@ fn create_vertex_buffer(size: u64) !struct { buffer: c.VkBuffer, memory: c.VkDev
         .buffer = vertex_buffer,
         .memory = vertex_buffer_memory,
     };
+}
+
+fn create_buffer(
+    usage: u32,
+    size: u64,
+    buffer: *c.VkBuffer,
+    buffer_memory: *c.VkDeviceMemory,
+    memory_property_flags: u32,
+) void {
+    var create_info = c.VkBufferCreateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .pQueueFamilyIndices = @ptrCast(&graphics_queue_family),
+        .queueFamilyIndexCount = 1,
+        .sharingMode = c.VK_SHARING_MODE_EXCLUSIVE,
+        .size = size,
+        .usage = usage,
+    };
+
+    _ = c.vkCreateBuffer(device, &create_info, null, buffer);
+    var memory_requirements: c.VkMemoryRequirements = undefined;
+    c.vkGetBufferMemoryRequirements(device, buffer.*, &memory_requirements);
+
+    //var property_flags: u32 = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    var preferred_memory_type_index = find_memory_type(memory_requirements.memoryTypeBits, memory_property_flags);
+
+    if (preferred_memory_type_index == null) {
+        std.debug.panic("Couldn't find memory index with the desired properties", .{});
+    }
+
+    var alloc_info = c.VkMemoryAllocateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = memory_requirements.size,
+        .memoryTypeIndex = preferred_memory_type_index.?,
+    };
+
+    var err = c.vkAllocateMemory(device, &alloc_info, null, buffer_memory);
+    if (err != c.VK_SUCCESS) {
+        std.debug.panic("vulkan allocate memory error: {}", .{err});
+    }
+
+    _ = c.vkBindBufferMemory(device, buffer.*, buffer_memory.*, 0);
 }
 
 fn find_memory_type(memory_type_bits: u32, property_flags: u32) ?u32 {

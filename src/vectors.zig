@@ -233,7 +233,7 @@ pub const vec3 = extern struct {
 };
 
 //Column Major Ordering
-pub const mat4 = struct {
+pub const mat4 = extern struct {
     values: @Vector(4 * 4, f32),
 
     pub fn zeroes() mat4 {
