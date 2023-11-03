@@ -283,6 +283,10 @@ pub const mat4 = extern struct {
         return mat4{
             .values = .{ 1 / (t * aspect_ratio), 0, 0, 0, 0, 1 / t, 0, 0, 0, 0, -(far + near) / (far - near), -1, 0, 0, -(2 * far * near) / (far - near), 1 },
         };
+
+        // return mat4{
+        //     .values = .{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0.01, 0, 0, 0, 50, 1 },
+        // };
     }
 
     pub fn multiply(self: mat4, other: mat4) mat4 {

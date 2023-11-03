@@ -16,6 +16,8 @@ const iivec4 = vectors.iivec4;
 
 const mat4 = vectors.mat4;
 
+const zigimg = @import("zigimg");
+
 const c = @cImport({
     @cDefine("GLFW_INCLUDE_VULKAN", {});
     @cInclude("GLFW/glfw3.h");
@@ -738,29 +740,11 @@ pub fn main() !void {
     // };
     var object = try Obj.load(alloc, true);
 
-    var s: f32 = 0.004;
-    var matrix = mat4.identity();
-    matrix = matrix.multiply(mat4.rotationY(0.2));
-    matrix = matrix.multiply(mat4.rotationX(std.math.pi));
-    matrix = matrix.multiply(mat4.rotationZ(0));
-    matrix = matrix.multiply(mat4.translation(0.0, 0.0, 0));
-    matrix = matrix.multiply(mat4.scale(s, s, s));
-    var fw: f32 = @floatFromInt(swapchain_extent.width);
-    _ = fw;
-    var fh: f32 = @floatFromInt(swapchain_extent.height);
-    _ = fh;
-    // matrix = matrix.multiply(mat4.perspective(
-    //     (std.math.pi / 4.0),
-    //     fw / fh,
-    //     0.1,
-    //     100,
-    // ));
-
     var model = &object.models.items[0];
     var vertex_data_len = model.position_indices.items.len;
     var vertex_data: []vec3 = try alloc.alloc(vec3, vertex_data_len);
     for (model.position_indices.items, 0..) |index, i| {
-        vertex_data[i] = object.positions.items[index].multiply_m4(matrix);
+        vertex_data[i] = object.positions.items[index];
     }
 
     var vertex_colors_len = model.normal_indices.items.len;
@@ -954,9 +938,25 @@ pub fn main() !void {
             std.debug.print("Error on command buffer end. Error code: {}", .{err});
         }
 
-        var ss: f32 = @floatCast(c.glfwGetTime());
+        var t: f32 = @floatCast(c.glfwGetTime());
+        var ss: f32 = 0.008;
+        var fw: f32 = @floatFromInt(swapchain_extent.width);
+        var fh: f32 = @floatFromInt(swapchain_extent.height);
+        var matrix = mat4.identity();
+        matrix = matrix.multiply(mat4.perspective(
+            std.math.degreesToRadians(f32, 90),
+            fw / fh,
+            0.1,
+            10,
+        ));
+        matrix = matrix.multiply(mat4.translation(0.0, 0.5, -1));
+        matrix = matrix.multiply(mat4.rotationY(t));
+        matrix = matrix.multiply(mat4.rotationX(std.math.pi));
+        matrix = matrix.multiply(mat4.rotationZ(0));
+        matrix = matrix.multiply(mat4.scale(ss, ss, ss));
+
         var temp_ubo = UBO{
-            .transform = mat4.scale(ss, ss, ss),
+            .transform = matrix,
         };
 
         uniform_buffers_mapped[f].* = temp_ubo;
@@ -1318,6 +1318,97 @@ fn create_image_view(image: c.VkImage, format: c.VkFormat, aspect_mask: c.VkImag
     return image_view;
 }
 
+fn create_texture_image() !c.VkImage {
+    var raw_image = try zigimg.Image.fromFilePath(alloc, "../models/test/tex/Image_0.png");
+    defer raw_image.deinit();
+    var bytes = raw_image.rawBytes();
+    var img_size = bytes.len;
+
+    var image_buffer: c.VkBuffer = undefined;
+    var image_buffer_memory: c.VkDeviceMemory = undefined;
+
+    create_buffer(
+        c.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        img_size,
+        &image_buffer,
+        &image_buffer_memory,
+        c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+    );
+
+    defer c.vkDestroyBuffer(device, image_buffer, null);
+    defer c.vkFreeMemory(device, image_buffer_memory, null);
+
+    var data: [*]u8 = undefined;
+    _ = c.vkMapMemory(device, image_buffer_memory, 0, img_size, 0, @ptrCast(@alignCast(&data)));
+    for (0..img_size) |b| {
+        data[b] = bytes[b];
+    }
+    c.vkUnmapMemory(device, image_buffer_memory);
+
+    var image: c.VkImage = undefined;
+    var image_memory: c.VkDeviceMemory = undefined;
+
+    create_image(
+        @as(u32, @intCast(raw_image.width)),
+        @as(u32, @intCast(raw_image.height)),
+        c.VK_FORMAT_R8G8B8A8_SRGB,
+        c.VK_IMAGE_TILING_OPTIMAL,
+        c.VK_IMAGE_USAGE_SAMPLED_BIT | c.VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        &image,
+        &image_memory,
+    );
+
+    transition_image_layout(image, c.VK_IMAGE_LAYOUT_UNDEFINED, c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+    copy_buffer_to_image(
+        image_buffer,
+        image,
+        @as(u32, @intCast(raw_image.width)),
+        @as(u32, @intCast(raw_image.width)),
+    );
+
+    transition_image_layout(image, c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    return image;
+}
+
+fn copy_buffer_to_image(image_buffer: c.VkBuffer, image: c.VkImage, width: u32, height: u32) void {
+    var cmd_buffer = begin_temp_command_buffer();
+
+    var image_region = c.VkBufferImageCopy{
+        .bufferImageHeight = height,
+        .bufferOffset = 0,
+        .bufferRowLength = 0,
+        .imageOffset = c.VkOffset3D{
+            .x = 0,
+            .y = 0,
+            .z = 0,
+        },
+        .imageExtent = c.VkExtent3D{
+            .width = width,
+            .height = height,
+            .depth = 1,
+        },
+        .imageSubresource = c.VkImageSubresourceLayers{
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+            .mipLevel = 0,
+            .aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+        },
+    };
+
+    c.vkCmdCopyBufferToImage(
+        cmd_buffer,
+        image_buffer,
+        image,
+        c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1,
+        &image_region,
+    );
+    end_temp_command_buffer(cmd_buffer);
+}
+
 fn begin_temp_command_buffer() c.VkCommandBuffer {
     var alloc_info = c.VkCommandBufferAllocateInfo{
         .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
@@ -1431,8 +1522,6 @@ fn transition_image_layout(image: c.VkImage, old_layout: c.VkImageLayout, new_la
 
     end_temp_command_buffer(cmd_buffer);
 }
-
-fn create_texture_image() void {}
 
 var depth_image: c.VkImage = undefined;
 var depth_image_memory: c.VkDeviceMemory = undefined;
@@ -1584,6 +1673,9 @@ const Obj = struct {
             .texcoords = try std.ArrayList(vec2).initCapacity(allocator, 1024 * 16),
             .normals = try std.ArrayList(vec3).initCapacity(allocator, 1024 * 16),
         };
+
+        var image = try create_texture_image();
+        _ = image;
 
         var file = try std.fs.cwd().openFile("../models/test/test.obj", .{});
         defer file.close();

@@ -1,0 +1,11 @@
+.{
+    .paths = .{""},
+    .name = "vulkan-test",
+    .version = "0.0.1",
+    .dependencies = .{
+        .zigimg = .{
+            .url = "https://github.com/zigimg/zigimg/archive/130e63c0ad1e753204ee0c5675b6efde67b6ab3f.tar.gz",
+            .hash = "122020bfa2caf1bef0d1eeb9e8874f9578e93300cedb57e548f87d94d0e2f0833e0e",
+        },
+    },
+}

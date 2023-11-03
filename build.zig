@@ -15,13 +15,20 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const exe = b.addExecutable(.{
-        .name = "vulkan",
+        .name = "vulkan test",
         // In this case the main source file is merely a path, however, in more
         // complicated build scripts, this could be a generated file.
         .root_source_file = .{ .path = "src/main.zig" },
         .target = target,
         .optimize = optimize,
     });
+
+    const zigimg = b.dependency("zigimg", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    exe.addModule("zigimg", zigimg.module("zigimg"));
 
     exe.linkSystemLibrary("glfw");
     exe.linkSystemLibrary("vulkan");
