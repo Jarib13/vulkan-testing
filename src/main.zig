@@ -321,6 +321,19 @@ pub fn main() !void {
     // create swap chain
     try create_swapchain();
 
+    //command pool
+    var command_pool_create_info = c.VkCommandPoolCreateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = c.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+        .queueFamilyIndex = graphics_queue_family.?,
+    };
+
+    err = c.vkCreateCommandPool(device, &command_pool_create_info, null, &command_pool);
+
+    if (err != c.VK_SUCCESS) {
+        std.debug.print("Failed to create command pool. error code: {}", .{err});
+    }
+
     //pipeline
 
     var fragment_shader_bytecode = @embedFile("bytecode/frag.spv");
@@ -360,16 +373,22 @@ pub fn main() !void {
         .stride = @sizeOf(vec3),
         .inputRate = c.VK_VERTEX_INPUT_RATE_VERTEX,
     };
+    var vertex_color_binding_description = c.VkVertexInputBindingDescription{
+        .binding = 1,
+        .stride = @sizeOf(vec3),
+        .inputRate = c.VK_VERTEX_INPUT_RATE_VERTEX,
+    };
+    var vertex_texcoord_binding_description = c.VkVertexInputBindingDescription{
+        .binding = 2,
+        .stride = @sizeOf(vec2),
+        .inputRate = c.VK_VERTEX_INPUT_RATE_VERTEX,
+    };
+
     var vertex_position_attribute_description = c.VkVertexInputAttributeDescription{
         .binding = 0,
         .format = c.VK_FORMAT_R32G32B32_SFLOAT,
         .location = 0,
         .offset = 0,
-    };
-    var vertex_color_binding_description = c.VkVertexInputBindingDescription{
-        .binding = 1,
-        .stride = @sizeOf(vec3),
-        .inputRate = c.VK_VERTEX_INPUT_RATE_VERTEX,
     };
     var vertex_color_attribute_description = c.VkVertexInputAttributeDescription{
         .binding = 1,
@@ -377,15 +396,23 @@ pub fn main() !void {
         .location = 1,
         .offset = 0,
     };
+    var vertex_texcoord_attribute_description = c.VkVertexInputAttributeDescription{
+        .binding = 2,
+        .format = c.VK_FORMAT_R32G32_SFLOAT,
+        .location = 2,
+        .offset = 0,
+    };
 
     var vertex_binding_descriptions = [_]c.VkVertexInputBindingDescription{
         vertex_position_binding_description,
         vertex_color_binding_description,
+        vertex_texcoord_binding_description,
     };
 
     var vertex_attribute_descriptions = [_]c.VkVertexInputAttributeDescription{
         vertex_position_attribute_description,
         vertex_color_attribute_description,
+        vertex_texcoord_attribute_description,
     };
 
     var vertex_input_state_create_info = std.mem.zeroes(c.VkPipelineVertexInputStateCreateInfo);
@@ -456,21 +483,34 @@ pub fn main() !void {
         .pImmutableSamplers = null,
     };
 
-    var ubo_layout: c.VkDescriptorSetLayout = undefined;
-    var ubo_layout_create_info = c.VkDescriptorSetLayoutCreateInfo{
-        .sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 1,
-        .pBindings = &ubo_layout_binding,
+    var sampler_layout_binding = c.VkDescriptorSetLayoutBinding{
+        .binding = 1,
+        .descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = 1,
+        .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT,
+        .pImmutableSamplers = null,
     };
 
-    _ = c.vkCreateDescriptorSetLayout(device, &ubo_layout_create_info, null, &ubo_layout);
+    var layout_bindings = [_]c.VkDescriptorSetLayoutBinding{
+        ubo_layout_binding,
+        sampler_layout_binding,
+    };
+
+    var layout: c.VkDescriptorSetLayout = undefined;
+    var layout_create_info = c.VkDescriptorSetLayoutCreateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = layout_bindings.len,
+        .pBindings = &layout_bindings,
+    };
+
+    _ = c.vkCreateDescriptorSetLayout(device, &layout_create_info, null, &layout);
 
     var pipeline_layout: c.VkPipelineLayout = undefined;
 
     var pipeline_layout_create_info = c.VkPipelineLayoutCreateInfo{
         .sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .setLayoutCount = 1,
-        .pSetLayouts = &ubo_layout,
+        .pSetLayouts = &layout,
         .pushConstantRangeCount = 0,
         .pPushConstantRanges = 0,
     };
@@ -480,6 +520,15 @@ pub fn main() !void {
     if (err != c.VK_SUCCESS) {
         std.debug.print("Failed to create pipeline layout. error code: {}", .{err});
     }
+
+    var object = try Obj.load(alloc, true);
+    var model = &object.models.items[0];
+
+    var texture_image_view = create_image_view(
+        object.texture,
+        c.VK_FORMAT_R8G8B8A8_SRGB,
+        c.VK_IMAGE_ASPECT_COLOR_BIT,
+    );
 
     const UBO = extern struct {
         transform: mat4,
@@ -507,15 +556,54 @@ pub fn main() !void {
         }
     }
 
-    var descriptor_pool_size = c.VkDescriptorPoolSize{
+    var device_properties: c.VkPhysicalDeviceProperties = undefined;
+    c.vkGetPhysicalDeviceProperties(physical_device, &device_properties);
+
+    var sampler: c.VkSampler = undefined;
+    var sampler_create_info = c.VkSamplerCreateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .addressModeU = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeV = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeW = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .anisotropyEnable = c.VK_FALSE,
+        .maxAnisotropy = device_properties.limits.maxSamplerAnisotropy,
+        .borderColor = c.VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+        .compareEnable = c.VK_TRUE,
+        .compareOp = c.VK_COMPARE_OP_ALWAYS,
+        .flags = 0,
+        .magFilter = c.VK_FILTER_LINEAR,
+        .minFilter = c.VK_FILTER_LINEAR,
+        .maxLod = 0,
+        .minLod = 0,
+        .mipmapMode = c.VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        .mipLodBias = 0,
+        .unnormalizedCoordinates = c.VK_FALSE,
+    };
+
+    err = c.vkCreateSampler(device, &sampler_create_info, null, &sampler);
+    if (err != c.VK_SUCCESS) {
+        std.debug.print("Error creating sampler: {}", .{err});
+    }
+
+    var ubo_descriptor_pool_size = c.VkDescriptorPoolSize{
         .type = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
         .descriptorCount = max_frames_in_flight,
     };
 
+    var sampler_descriptor_pool_size = c.VkDescriptorPoolSize{
+        .type = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = max_frames_in_flight,
+    };
+
+    var descriptor_pool_sizes = [_]c.VkDescriptorPoolSize{
+        ubo_descriptor_pool_size,
+        sampler_descriptor_pool_size,
+    };
+
     var descriptor_pool_create_info = c.VkDescriptorPoolCreateInfo{
         .sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .poolSizeCount = 1,
-        .pPoolSizes = &descriptor_pool_size,
+        .poolSizeCount = descriptor_pool_sizes.len,
+        .pPoolSizes = &descriptor_pool_sizes,
         .maxSets = max_frames_in_flight,
     };
 
@@ -528,7 +616,7 @@ pub fn main() !void {
 
     var descriptor_set_layouts = try alloc.alloc(c.VkDescriptorSetLayout, max_frames_in_flight);
     for (0..max_frames_in_flight) |i| {
-        descriptor_set_layouts[i] = ubo_layout;
+        descriptor_set_layouts[i] = layout;
     }
 
     var descriptor_set_alloc_info = c.VkDescriptorSetAllocateInfo{
@@ -564,7 +652,30 @@ pub fn main() !void {
             .pTexelBufferView = null,
         };
 
-        c.vkUpdateDescriptorSets(device, 1, &write_descriptor_set, 0, null);
+        var descriptor_image_info = c.VkDescriptorImageInfo{
+            .imageLayout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .imageView = texture_image_view,
+            .sampler = sampler,
+        };
+
+        var sampler_write_descriptor_set = c.VkWriteDescriptorSet{
+            .sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = descriptor_sets[i],
+            .dstBinding = 1,
+            .dstArrayElement = 0,
+            .descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .pBufferInfo = null,
+            .pImageInfo = &descriptor_image_info,
+            .pTexelBufferView = null,
+        };
+
+        var write_descriptor_sets = [_]c.VkWriteDescriptorSet{
+            write_descriptor_set,
+            sampler_write_descriptor_set,
+        };
+
+        c.vkUpdateDescriptorSets(device, write_descriptor_sets.len, &write_descriptor_sets, 0, null);
     }
 
     var color_attachment_description = c.VkAttachmentDescription{
@@ -676,18 +787,6 @@ pub fn main() !void {
         std.debug.print("Failed to create graphics pipeline. error code: {}", .{err});
     }
 
-    var command_pool_create_info = c.VkCommandPoolCreateInfo{
-        .sType = c.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-        .flags = c.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-        .queueFamilyIndex = graphics_queue_family.?,
-    };
-
-    err = c.vkCreateCommandPool(device, &command_pool_create_info, null, &command_pool);
-
-    if (err != c.VK_SUCCESS) {
-        std.debug.print("Failed to create command pool. error code: {}", .{err});
-    }
-
     create_depth_buffer();
     try create_framebuffers();
 
@@ -730,17 +829,32 @@ pub fn main() !void {
         }
     }
 
-    // var vertex_data = [_]vec2{
-    //     .{ .x = 0, .y = -0.5 },
-    //     .{ .x = 0.5, .y = 0.5 },
-    //     .{ .x = -0.5, .y = 0.5 },
-    //     .{ .x = 0, .y = 0.5 },
-    //     .{ .x = -0.5, .y = -0.5 },
-    //     .{ .x = 0.5, .y = -0.5 },
+    // var vertex_data = [_]vec3{
+    //     .{ .x = 0, .y = 0, .z = 0 },
+    //     .{ .x = 0, .y = 1, .z = 0 },
+    //     .{ .x = 1, .y = 1, .z = 0 },
+    //     .{ .x = 1, .y = 1, .z = 0 },
+    //     .{ .x = 1, .y = 0, .z = 0 },
+    //     .{ .x = 0, .y = 0, .z = 0 },
     // };
-    var object = try Obj.load(alloc, true);
+    // var vertex_colors = [_]vec3{
+    //     .{ .x = 1, .y = 0, .z = 1 },
+    //     .{ .x = 1, .y = 0.1, .z = 0.8 },
+    //     .{ .x = 0.8, .y = 0.1, .z = 1 },
+    //     .{ .x = 0, .y = 1, .z = 1 },
+    //     .{ .x = 0.1, .y = 0.8, .z = 1 },
+    //     .{ .x = 0.1, .y = 1, .z = 0.8 },
+    // };
 
-    var model = &object.models.items[0];
+    // var vertex_texcoords = [_]vec2{
+    //     .{ .x = 0, .y = 0 },
+    //     .{ .x = 0, .y = 1 },
+    //     .{ .x = 1, .y = 1 },
+    //     .{ .x = 1, .y = 1 },
+    //     .{ .x = 1, .y = 0 },
+    //     .{ .x = 0, .y = 0 },
+    // };
+
     var vertex_data_len = model.position_indices.items.len;
     var vertex_data: []vec3 = try alloc.alloc(vec3, vertex_data_len);
     for (model.position_indices.items, 0..) |index, i| {
@@ -753,14 +867,11 @@ pub fn main() !void {
         vertex_colors[i] = object.normals.items[index];
     }
 
-    // var vertex_colors = [_]vec3{
-    //     .{ .x = 1, .y = 0, .z = 1 },
-    //     .{ .x = 1, .y = 0.1, .z = 0.8 },
-    //     .{ .x = 0.8, .y = 0.1, .z = 1 },
-    //     .{ .x = 0, .y = 1, .z = 1 },
-    //     .{ .x = 0.1, .y = 0.8, .z = 1 },
-    //     .{ .x = 0.1, .y = 1, .z = 0.8 },
-    // };
+    var vertex_texcoords_len = model.texcoord_indices.items.len;
+    var vertex_texcoords: []vec2 = try alloc.alloc(vec2, vertex_texcoords_len);
+    for (model.texcoord_indices.items, 0..) |index, i| {
+        vertex_texcoords[i] = object.texcoords.items[index];
+    }
 
     var positions = try create_vertex_buffer(@sizeOf(vec3) * vertex_data.len);
     var vertex_buffer = positions.buffer;
@@ -769,6 +880,10 @@ pub fn main() !void {
     var colors = try create_vertex_buffer(@sizeOf(vec3) * vertex_colors.len);
     var vertex_color_buffer = colors.buffer;
     var vertex_color_buffer_memory = colors.memory;
+
+    var texcoords = try create_vertex_buffer(@sizeOf(vec2) * vertex_texcoords.len);
+    var vertex_texcoord_buffer = texcoords.buffer;
+    var vertex_texcoord_buffer_memory = texcoords.memory;
 
     var data: [*c]vec3 = undefined;
     var data_vec3: [*c]vec3 = undefined;
@@ -779,14 +894,13 @@ pub fn main() !void {
         std.debug.panic("bind buffer memory error: {}", .{err});
     }
 
-    err = c.vkMapMemory(device, vertex_buffer_memory, 0, @sizeOf(vec3) * vertex_data_len, 0, @alignCast(@ptrCast(&data)));
+    err = c.vkMapMemory(device, vertex_buffer_memory, 0, @sizeOf(vec3) * vertex_data.len, 0, @alignCast(@ptrCast(&data)));
 
     if (err != c.VK_SUCCESS) {
         std.debug.panic("vulkan map memory error: {}", .{err});
     }
 
-    // @memcpy(data[0..vertex_data_len], vertex_data[0..vertex_data_len]);
-    for (0..vertex_data_len) |i| {
+    for (0..vertex_data.len) |i| {
         data[i] = vertex_data[i];
     }
 
@@ -806,6 +920,27 @@ pub fn main() !void {
     }
     @memcpy(data_vec3[0..vertex_colors.len], vertex_colors[0..vertex_colors.len]);
     c.vkUnmapMemory(device, vertex_color_buffer_memory);
+
+    //texcoords
+
+    {
+        var texcoord_data_ptr: [*c]vec2 = undefined;
+
+        err = c.vkBindBufferMemory(device, vertex_texcoord_buffer, vertex_texcoord_buffer_memory, 0);
+        if (err != c.VK_SUCCESS) {
+            std.debug.panic("bind buffer memory error: {}", .{err});
+        }
+        err = c.vkMapMemory(device, vertex_texcoord_buffer_memory, 0, @sizeOf(vec2) * vertex_texcoords.len, 0, @alignCast(@ptrCast(&texcoord_data_ptr)));
+        defer c.vkUnmapMemory(device, vertex_texcoord_buffer_memory);
+        if (err != c.VK_SUCCESS) {
+            std.debug.panic("vulkan map memory error: {}", .{err});
+        }
+
+        for (0..vertex_texcoords.len) |i| {
+            texcoord_data_ptr[i] = vertex_texcoords[i];
+        }
+    }
+
     var command_buffer_image_index: u32 = 0;
 
     var last_fps: usize = 0;
@@ -898,16 +1033,18 @@ pub fn main() !void {
         var buffers = [_]c.VkBuffer{
             vertex_buffer,
             vertex_color_buffer,
+            vertex_texcoord_buffer,
         };
 
         var buffer_offsets = [_]u64{
+            0,
             0,
             0,
         };
         c.vkCmdBindVertexBuffers(
             command_buffers[f],
             0,
-            2,
+            3,
             &buffers,
             @ptrCast(&buffer_offsets),
         );
@@ -939,7 +1076,7 @@ pub fn main() !void {
         }
 
         var t: f32 = @floatCast(c.glfwGetTime());
-        var ss: f32 = 0.008;
+        var ss: f32 = 0.012;
         var fw: f32 = @floatFromInt(swapchain_extent.width);
         var fh: f32 = @floatFromInt(swapchain_extent.height);
         var matrix = mat4.identity();
@@ -949,7 +1086,7 @@ pub fn main() !void {
             0.1,
             10,
         ));
-        matrix = matrix.multiply(mat4.translation(0.0, 0.5, -1));
+        matrix = matrix.multiply(mat4.translation(0.0, 1, -1));
         matrix = matrix.multiply(mat4.rotationY(t));
         matrix = matrix.multiply(mat4.rotationX(std.math.pi));
         matrix = matrix.multiply(mat4.rotationZ(0));
@@ -1318,8 +1455,8 @@ fn create_image_view(image: c.VkImage, format: c.VkFormat, aspect_mask: c.VkImag
     return image_view;
 }
 
-fn create_texture_image() !c.VkImage {
-    var raw_image = try zigimg.Image.fromFilePath(alloc, "../models/test/tex/Image_0.png");
+fn create_texture_image(path: []const u8) !c.VkImage {
+    var raw_image = try zigimg.Image.fromFilePath(alloc, path);
     defer raw_image.deinit();
     var bytes = raw_image.rawBytes();
     var img_size = bytes.len;
@@ -1418,14 +1555,20 @@ fn begin_temp_command_buffer() c.VkCommandBuffer {
     };
 
     var command_buffer: c.VkCommandBuffer = undefined;
-    _ = c.vkAllocateCommandBuffers(device, &alloc_info, &command_buffer);
+    var err = c.vkAllocateCommandBuffers(device, &alloc_info, &command_buffer);
+    if (err != c.VK_SUCCESS) {
+        std.debug.panic("Failed to allocate command buffer: {}", .{err});
+    }
 
     var begin_info = c.VkCommandBufferBeginInfo{
         .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
 
-    _ = c.vkBeginCommandBuffer(command_buffer, &begin_info);
+    err = c.vkBeginCommandBuffer(command_buffer, &begin_info);
+    if (err != c.VK_SUCCESS) {
+        std.debug.panic("Failed to begin command buffer: {}", .{err});
+    }
 
     return command_buffer;
 }
@@ -1664,6 +1807,8 @@ const Obj = struct {
     texcoords: std.ArrayList(vec2),
     normals: std.ArrayList(vec3),
 
+    texture: c.VkImage,
+
     //materials: std.StringHashMap(Material),
 
     fn load(allocator: std.mem.Allocator, unified: bool) !Obj {
@@ -1672,10 +1817,10 @@ const Obj = struct {
             .positions = try std.ArrayList(vec3).initCapacity(allocator, 1024 * 16),
             .texcoords = try std.ArrayList(vec2).initCapacity(allocator, 1024 * 16),
             .normals = try std.ArrayList(vec3).initCapacity(allocator, 1024 * 16),
+            .texture = null,
         };
 
-        var image = try create_texture_image();
-        _ = image;
+        object.texture = try create_texture_image("../models/test/textures/Image_0.png");
 
         var file = try std.fs.cwd().openFile("../models/test/test.obj", .{});
         defer file.close();
@@ -1700,15 +1845,6 @@ const Obj = struct {
                     }
 
                     try object.models.append(model.?);
-                    // std.debug.print("M{} -- P {},PI {} T{}, TI{}, N{}, NI{},\n", .{
-                    //     obj.models.items.len,
-                    //     model.?.positions.items.len,
-                    //     model.?.position_indices.items.len,
-                    //     model.?.texcoords.items.len,
-                    //     model.?.texcoord_indices.items.len,
-                    //     model.?.normals.items.len,
-                    //     model.?.normal_indices.items.len,
-                    // });
                 }
 
                 model = try Model.init(allocator);
